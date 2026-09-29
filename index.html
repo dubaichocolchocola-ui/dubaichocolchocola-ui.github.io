@@ -1498,6 +1498,7 @@
     g.setAttribute('normal', new THREE.Float32BufferAttribute(p.nor, 3));
     return g;
   });
+  const SHOULDER_OUT = 0.3; // model units (× PENGUIN_S ≈ 12 cm) each shoulder moves outward from the model's pivot
   function makePenguin(color, name, withLabel) {
     const root = new THREE.Group();
     const model = new THREE.Group(); model.scale.setScalar(PENGUIN_S); root.add(model);
@@ -1514,9 +1515,10 @@
       if (p.kind === 'flipper') {
         const pv = new THREE.Group();
         pv.position.fromArray(p.pivot);
-        pv.scale.setScalar(2);
         model.add(pv);
         const rest = new THREE.Vector3().fromArray(p.center).sub(pv.position).normalize();
+        // shoulders further out to the sides of the body (rest direction is taken from the original pivot)
+        pv.position.x += Math.sign(p.pivot[0]) * SHOULDER_OUT;
         // pv -> align(Y->rest) -> stretch along Y -> unalign -> mesh: scales the flipper along its own length
         const toRest = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), rest);
         const align = new THREE.Group(); align.quaternion.copy(toRest);
@@ -1527,8 +1529,7 @@
         const pa = penguinGeos[i].attributes.position, tv = new THREE.Vector3();
         let len = 0;
         for (let k = 0; k < pa.count; k++) len = Math.max(len, tv.fromBufferAttribute(pa, k).dot(rest));
-        // len is in model space, so it includes the pv scale (posePenguin compares it to the hand distance in model space)
-        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len) * pv.scale.y, side: p.pivot[0] < 0 ? 'l' : 'r' });
+        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
       } else {
         mesh.position.fromArray(p.pivot);
         bodyParts.add(mesh);
@@ -1568,11 +1569,10 @@
     a.flippers.forEach(f => {
       _pLoc.copy(f.side === 'l' ? l : r).applyMatrix4(_pInv).sub(f.pv.position);
       if (_pLoc.lengthSq() < 1e-6) return;
-      // Long arms: stretch the flipper so its tip reaches the hand, and aim it fully at the hand while stretched
-      const s = Math.max(1, _pLoc.length() / f.len);
-      f.stretch.scale.set(1, s, 1);
+      // Stretch only along the flipper's length (normal thickness) so the tip lands exactly on the hand, and aim straight at it
+      f.stretch.scale.set(1, Math.max(0.1, _pLoc.length() / f.len), 1);
       _pQ.setFromUnitVectors(f.rest, _pLoc.normalize());
-      f.pv.quaternion.copy(_pQI).slerp(_pQ, 0.8 + 0.2 * Math.min(1, (s - 1) * 2));
+      f.pv.quaternion.copy(_pQ);
     });
     const br = Math.sin(performance.now() / 700 + a.phase) * 0.008;
     a.torso.scale.set(1 + br, 1 + br * 0.4, 1 + br);
@@ -1802,7 +1802,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v5';
+  const GAME_VERSION = 'v6';
   const wristCv = document.createElement('canvas');
   wristCv.width = 512; wristCv.height = 256;
   const wristTex = new THREE.CanvasTexture(wristCv);
