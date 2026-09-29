@@ -1802,7 +1802,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v6';
+  const GAME_VERSION = 'v7';
   const wristCv = document.createElement('canvas');
   wristCv.width = 512; wristCv.height = 256;
   const wristTex = new THREE.CanvasTexture(wristCv);
@@ -2054,11 +2054,19 @@
   let onGroundPrev = false, wallNormal = V3(), wallTimer = 0, walkT = 0;
   const keys = {};
 
-  // Gorilla Tag style long arms: head + (controller - head) * ARM_REACH, all in rig space
-  const ARM_REACH = 2.5;
+  // Gorilla Tag style long arms, stretched from each shoulder (not the face): shoulder + (controller - shoulder) * ARM_REACH.
+  // Shoulder = head, SHOULDER_SIDE to that hand's side (horizontal, relative to where the head looks) and SHOULDER_DOWN lower.
+  // All in rig space.
+  const ARM_REACH = 1.3, SHOULDER_SIDE = 0.2, SHOULDER_DOWN = 0.25;
+  const _hwFwd = V3(), _hwRight = V3(1, 0, 0), _hwShoulder = V3();
   function handWorld(h, out) {
-    return out.copy(h.ctrl.position).sub(camera.position).multiplyScalar(ARM_REACH)
-      .add(camera.position).add(rig.position);
+    _hwFwd.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
+    if (_hwFwd.lengthSq() > 1e-4) _hwRight.set(-_hwFwd.z, 0, _hwFwd.x).normalize(); // looking straight up/down: keep the last right
+    const side = h.side === 'left' ? -1 : h.side === 'right' ? 1 : 0;
+    _hwShoulder.copy(camera.position).addScaledVector(_hwRight, side * SHOULDER_SIDE);
+    _hwShoulder.y -= SHOULDER_DOWN;
+    return out.copy(h.ctrl.position).sub(_hwShoulder).multiplyScalar(ARM_REACH)
+      .add(_hwShoulder).add(rig.position);
   }
 
   renderer.setAnimationLoop(() => {
