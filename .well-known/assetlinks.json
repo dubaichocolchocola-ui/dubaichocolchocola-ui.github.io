@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.foresttag.vr",
+    "sha256_cert_fingerprints": ["E8:B1:CD:D4:C9:3D:E0:DA:4B:EA:4C:82:0E:33:B7:0C:75:DC:C0:47:FB:FC:7F:0F:6D:D8:7D:86:D9:32:67:AB"]
+  }
+}]
