@@ -1,6 +1,6 @@
 // Page: network first, so new versions of the game arrive right away (cache is only the offline fallback).
 // Everything else (three.js, icons): cache first.
-const CACHE = 'forest-tag-v2';
+const CACHE = 'forest-tag-v4';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   'https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js'];
 
@@ -26,7 +26,9 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).then(res => save(req, res)).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html'))));
+    // no-cache: always revalidate with the server, so the browser's HTTP cache can't hand back an old page either
+    e.respondWith(fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }).then(res => save(req, res))
+      .catch(() => caches.match(req).then(hit => hit || caches.match('./index.html'))));
     return;
   }
   e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => save(req, res))));

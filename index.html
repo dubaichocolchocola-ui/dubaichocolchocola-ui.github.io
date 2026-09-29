@@ -1514,10 +1514,19 @@
       if (p.kind === 'flipper') {
         const pv = new THREE.Group();
         pv.position.fromArray(p.pivot);
-        pv.add(mesh);
         model.add(pv);
         const rest = new THREE.Vector3().fromArray(p.center).sub(pv.position).normalize();
-        flippers.push({ pv, rest, side: p.pivot[0] < 0 ? 'l' : 'r' });
+        // pv -> align(Y->rest) -> stretch along Y -> unalign -> mesh: scales the flipper along its own length
+        const toRest = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), rest);
+        const align = new THREE.Group(); align.quaternion.copy(toRest);
+        const stretch = new THREE.Group();
+        const unalign = new THREE.Group(); unalign.quaternion.copy(toRest).invert();
+        pv.add(align); align.add(stretch); stretch.add(unalign); unalign.add(mesh);
+        // rest length = how far the flipper geometry reaches from the pivot along its rest direction
+        const pa = penguinGeos[i].attributes.position, tv = new THREE.Vector3();
+        let len = 0;
+        for (let k = 0; k < pa.count; k++) len = Math.max(len, tv.fromBufferAttribute(pa, k).dot(rest));
+        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
       } else {
         mesh.position.fromArray(p.pivot);
         bodyParts.add(mesh);
@@ -1557,8 +1566,11 @@
     a.flippers.forEach(f => {
       _pLoc.copy(f.side === 'l' ? l : r).applyMatrix4(_pInv).sub(f.pv.position);
       if (_pLoc.lengthSq() < 1e-6) return;
+      // Long arms: stretch the flipper so its tip reaches the hand, and aim it fully at the hand while stretched
+      const s = Math.max(1, _pLoc.length() / f.len);
+      f.stretch.scale.set(1, s, 1);
       _pQ.setFromUnitVectors(f.rest, _pLoc.normalize());
-      f.pv.quaternion.copy(_pQI).slerp(_pQ, 0.8);
+      f.pv.quaternion.copy(_pQI).slerp(_pQ, 0.8 + 0.2 * Math.min(1, (s - 1) * 2));
     });
     const br = Math.sin(performance.now() / 700 + a.phase) * 0.008;
     a.torso.scale.set(1 + br, 1 + br * 0.4, 1 + br);
@@ -1788,6 +1800,7 @@
   }
 
   // Wrist panel
+  const GAME_VERSION = 'v4';
   const wristCv = document.createElement('canvas');
   wristCv.width = 512; wristCv.height = 256;
   const wristTex = new THREE.CanvasTexture(wristCv);
@@ -1804,9 +1817,12 @@
     c.beginPath(); if (c.roundRect) c.roundRect(6, 6, 500, 244, 36); else c.rect(6, 6, 500, 244); c.fill();
     c.fillStyle = '#fff'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `900 72px ${F}`;
-    c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 95);
+    c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 82);
     c.font = `700 40px ${F}`; c.fillStyle = '#ffe9a8';
-    c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 190);
+    c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 160);
+    // Version + arm length, so it's obvious in the headset which build is running
+    c.font = `700 28px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
+    c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH}`, 256, 220);
     wristTex.needsUpdate = true;
   }
 
