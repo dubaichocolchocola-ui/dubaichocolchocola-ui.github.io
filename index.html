@@ -1808,7 +1808,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v10';
+  const GAME_VERSION = 'v11';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2092,7 +2092,7 @@
   // is taken as the player's standing height, and view is shifted so that height becomes HEAD_GAME_Y in the game.
   const HEAD_GAME_Y = 1.2, CALIB_TIME = 3, CALIB_SKIP = 0.25;
   let calibT = -1, calibMax = 0;
-  function startCalibration() { calibT = 0; calibMax = 0; wristKey = ''; }
+  function startCalibration() { calibT = 0; calibMax = 0; calibHigherT = 0; wristKey = ''; }
   function setViewOffset(y) {
     if (Math.abs(view.position.y - y) < 0.001) return;
     view.position.y = y;
@@ -2100,8 +2100,20 @@
     hands.forEach(h => { h.touch = false; h.cooldown = 0.1; });
     history = []; wasTouching = false;
   }
+  // Upward-only correction after the window: if the head stays CALIB_RAISE above the measured height for
+  // CALIB_RAISE_TIME (player was sitting/bending when calibration ran, then stood up), that becomes the height.
+  // Crouching never changes it, and a real-life jump is too short to count.
+  const CALIB_RAISE = 0.05, CALIB_RAISE_TIME = 1.5;
+  let calibHigherT = 0;
   function updateCalibration(dt) {
-    if (calibT < 0) return;
+    if (calibT < 0) {
+      const y = camera.position.y;
+      if (calibMax > 0 && y > calibMax + CALIB_RAISE) {
+        calibHigherT += dt;
+        if (calibHigherT >= CALIB_RAISE_TIME) { calibMax = y; setViewOffset(HEAD_GAME_Y - calibMax); calibHigherT = 0; wristKey = ''; }
+      } else calibHigherT = 0;
+      return;
+    }
     calibT += dt;
     // skip the first frames: camera.position still holds the pre-VR value until the first XR render
     const y = camera.position.y;
