@@ -2036,7 +2036,12 @@
   let onGroundPrev = false, wallNormal = V3(), wallTimer = 0, walkT = 0;
   const keys = {};
 
-  function handWorld(h, out) { return out.copy(rig.position).add(h.ctrl.position); }
+  // Gorilla Tag style long arms: head + (controller - head) * ARM_REACH, all in rig space
+  const ARM_REACH = 1.8;
+  function handWorld(h, out) {
+    return out.copy(h.ctrl.position).sub(camera.position).multiplyScalar(ARM_REACH)
+      .add(camera.position).add(rig.position);
+  }
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.033);
