@@ -1514,6 +1514,7 @@
       if (p.kind === 'flipper') {
         const pv = new THREE.Group();
         pv.position.fromArray(p.pivot);
+        pv.scale.setScalar(2);
         model.add(pv);
         const rest = new THREE.Vector3().fromArray(p.center).sub(pv.position).normalize();
         // pv -> align(Y->rest) -> stretch along Y -> unalign -> mesh: scales the flipper along its own length
@@ -1526,7 +1527,8 @@
         const pa = penguinGeos[i].attributes.position, tv = new THREE.Vector3();
         let len = 0;
         for (let k = 0; k < pa.count; k++) len = Math.max(len, tv.fromBufferAttribute(pa, k).dot(rest));
-        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
+        // len is in model space, so it includes the pv scale (posePenguin compares it to the hand distance in model space)
+        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len) * pv.scale.y, side: p.pivot[0] < 0 ? 'l' : 'r' });
       } else {
         mesh.position.fromArray(p.pivot);
         bodyParts.add(mesh);
@@ -1800,7 +1802,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v4';
+  const GAME_VERSION = 'v5';
   const wristCv = document.createElement('canvas');
   wristCv.width = 512; wristCv.height = 256;
   const wristTex = new THREE.CanvasTexture(wristCv);
