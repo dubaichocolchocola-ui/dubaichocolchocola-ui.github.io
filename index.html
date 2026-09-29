@@ -251,7 +251,8 @@
   const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.03, 400);
   rig.add(camera);
   camera.position.set(0, 1.5, 0);
-  camera.layers.enable(2);
+  // Layers 1 and 2 are three.js's left/right eye layers in VR, so the first-person body uses 4 (and the mirror copy 5)
+  camera.layers.enable(4);
 
   // ================= World =================
   const colliders = [];
@@ -444,7 +445,7 @@
     fragmentShader: 'uniform sampler2D tDiffuse; varying vec4 vUv; void main(){ vec4 c = texture2DProj(tDiffuse, vUv); gl_FragColor = vec4(c.rgb * 0.93 + vec3(0.02, 0.03, 0.045), 1.0); }'
   }));
   const mirrorCam = new THREE.PerspectiveCamera();
-  mirrorCam.layers.enable(1); mirrorCam.layers.disable(2);
+  mirrorCam.layers.enable(5); mirrorCam.layers.disable(4);
   const _mN = V3(), _mP = V3(), _cP = V3(), _mV = V3(), _mT = V3(), _mLook = V3(), _mRot = new THREE.Matrix4();
   const _mPlane = new THREE.Plane(), _mClip = new THREE.Vector4(), _mQ = new THREE.Vector4();
   function renderMirror(cam) {
@@ -1802,7 +1803,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v7';
+  const GAME_VERSION = 'v8';
   const wristCv = document.createElement('canvas');
   wristCv.width = 512; wristCv.height = 256;
   const wristTex = new THREE.CanvasTexture(wristCv);
@@ -2074,6 +2075,12 @@
     updateDecor(dt);
     const inVR = renderer.xr.isPresenting;
     const active = inVR || deskMode;
+    if (inVR) {
+      // The per-eye XR cameras don't copy the user camera's layers, so the first-person body layer is enabled on them directly
+      const xc = renderer.xr.getCamera();
+      xc.layers.enable(4);
+      xc.cameras.forEach(c => c.layers.enable(4));
+    }
 
     if (!active) {
       rig.position.set(0, 0, 0);
@@ -2239,9 +2246,9 @@
       selfAv.head.visible = false;
       if (selfAv.cosmetics) selfAv.cosmetics.visible = false;
       selfAv.torso.visible = false;
-      selfAv.root.traverse(o => o.layers.set(2));
+      selfAv.root.traverse(o => o.layers.set(4));
     }
-    { const k0 = selfAv.wearKey; applyCosmetics(selfAv, shop.wearing, lolliInMouth()); if (selfAv.wearKey !== k0) selfAv.root.traverse(o => o.layers.set(2)); selfAv.mouthCos.visible = false; }
+    { const k0 = selfAv.wearKey; applyCosmetics(selfAv, shop.wearing, lolliInMouth()); if (selfAv.wearKey !== k0) selfAv.root.traverse(o => o.layers.set(4)); selfAv.mouthCos.visible = false; }
     // lollipop: bring the left hand to your mouth to stick it there, do it again to take it back
     if (shop.wearing.includes('lollipop')) {
       camera.getWorldDirection(tmp);
@@ -2259,7 +2266,7 @@
         mirrorAv.wearKey = null;
       }
       applyCosmetics(mirrorAv, shop.wearing, lolliInMouth());
-      mirrorAv.root.traverse(o => o.layers.set(1));
+      mirrorAv.root.traverse(o => o.layers.set(5));
       if (mirrorAv.it !== myIt) setAvatarIt(mirrorAv, myIt);
       mirrorAv.root.visible = true;
       camera.getWorldDirection(tmp);
