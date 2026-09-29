@@ -249,7 +249,12 @@
   const rig = new THREE.Group();
   scene.add(rig);
   const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.03, 400);
-  rig.add(camera);
+  // view = height calibration: camera and controllers live under it, and in VR it's lowered (negative y) so the
+  // player's real head height maps to the penguin's head height. camera.position / ctrl.position stay raw tracking
+  // values, so rig-space positions are view.position + those.
+  const view = new THREE.Group();
+  rig.add(view);
+  view.add(camera);
   camera.position.set(0, 1.5, 0);
   // Layers 1 and 2 are three.js's left/right eye layers in VR, so the first-person body uses 4 (and the mirror copy 5)
   camera.layers.enable(4);
@@ -1783,7 +1788,7 @@
 
   function makeHand(i) {
     const ctrl = renderer.xr.getController(i);
-    rig.add(ctrl);
+    view.add(ctrl);
     const h = { ctrl, pad: null, side: null, touch: false, anchor: V3(), normal: V3(), cooldown: 0, visual: null, lastWorld: V3() };
     ctrl.addEventListener('connected', e => { h.pad = e.data.gamepad; h.side = e.data.handedness; });
     ctrl.addEventListener('disconnected', () => { h.side = null; h.touch = false; });
@@ -1803,21 +1808,33 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v9';
+  const GAME_VERSION = 'v10';
+  // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
+  const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
+  const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
+  const calBtnLocal = V3(((CAL_BTN.x + CAL_BTN.w / 2) / WCV_W - 0.5) * WRIST_W, (0.5 - (CAL_BTN.y + CAL_BTN.h / 2) / WCV_H) * WRIST_H, 0);
+  const calBtnHalf = { x: CAL_BTN.w / WCV_W * WRIST_W / 2, y: CAL_BTN.h / WCV_H * WRIST_H / 2 };
   const wristCv = document.createElement('canvas');
-  wristCv.width = 512; wristCv.height = 256;
+  wristCv.width = WCV_W; wristCv.height = WCV_H;
   const wristTex = new THREE.CanvasTexture(wristCv);
-  const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08), new THREE.MeshBasicMaterial({ map: wristTex, transparent: true }));
+  const wrist = new THREE.Mesh(new THREE.PlaneGeometry(WRIST_W, WRIST_H), new THREE.MeshBasicMaterial({ map: wristTex, transparent: true }));
   wrist.visible = false;
-  let wristKey = '';
+  let wristKey = '', calBtnArmed = true, calBtnHover = false;
   function drawWrist(players, solo) {
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}`;
+    const calibrating = calibT >= 0;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
-    c.clearRect(0, 0, 512, 256);
+    c.clearRect(0, 0, WCV_W, WCV_H);
     c.fillStyle = myIt ? 'rgba(200,40,20,0.92)' : 'rgba(20,50,20,0.92)';
-    c.beginPath(); if (c.roundRect) c.roundRect(6, 6, 500, 244, 36); else c.rect(6, 6, 500, 244); c.fill();
+    c.beginPath(); if (c.roundRect) c.roundRect(6, 6, 500, 340, 36); else c.rect(6, 6, 500, 340); c.fill();
+    // calibrate-height button (press it with the right controller)
+    c.fillStyle = calibrating ? '#7ed957' : calBtnHover ? '#ffe58a' : '#ffcf4a';
+    c.beginPath(); if (c.roundRect) c.roundRect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h, 35); else c.rect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h); c.fill();
+    c.fillStyle = '#2a1a05'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `900 36px ${F}`;
+    c.fillText(calibrating ? 'עמוד ישר… מכייל' : 'כיול גובה', CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y + CAL_BTN.h / 2 + 2);
     c.fillStyle = '#fff'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `900 72px ${F}`;
     c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 82);
@@ -1825,7 +1842,7 @@
     c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 160);
     // Version + arm length, so it's obvious in the headset which build is running
     c.font = `700 28px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
-    c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH}`, 256, 220);
+    c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH} · height ${view.position.y >= 0 ? '+' : ''}${view.position.y.toFixed(2)}m`, 256, 220);
     wristTex.needsUpdate = true;
   }
 
@@ -2064,11 +2081,38 @@
     _hwFwd.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
     if (_hwFwd.lengthSq() > 1e-4) _hwRight.set(-_hwFwd.z, 0, _hwFwd.x).normalize(); // looking straight up/down: keep the last right
     const side = h.side === 'left' ? -1 : h.side === 'right' ? 1 : 0;
-    _hwShoulder.copy(camera.position).addScaledVector(_hwRight, side * SHOULDER_SIDE);
+    _hwShoulder.copy(camera.position).add(view.position).addScaledVector(_hwRight, side * SHOULDER_SIDE);
     _hwShoulder.y -= SHOULDER_DOWN;
-    return out.copy(h.ctrl.position).sub(_hwShoulder).multiplyScalar(ARM_REACH)
+    return out.copy(h.ctrl.position).add(view.position).sub(_hwShoulder).multiplyScalar(ARM_REACH)
       .add(_hwShoulder).add(rig.position);
   }
+
+  // ---- Height calibration (VR) ----
+  // For the first CALIB_TIME seconds after entering VR (or after pressing the wrist button) the highest head height
+  // is taken as the player's standing height, and view is shifted so that height becomes HEAD_GAME_Y in the game.
+  const HEAD_GAME_Y = 1.2, CALIB_TIME = 3, CALIB_SKIP = 0.25;
+  let calibT = -1, calibMax = 0;
+  function startCalibration() { calibT = 0; calibMax = 0; wristKey = ''; }
+  function setViewOffset(y) {
+    if (Math.abs(view.position.y - y) < 0.001) return;
+    view.position.y = y;
+    // hands jump with the offset: drop any grip so the jump isn't turned into a fling
+    hands.forEach(h => { h.touch = false; h.cooldown = 0.1; });
+    history = []; wasTouching = false;
+  }
+  function updateCalibration(dt) {
+    if (calibT < 0) return;
+    calibT += dt;
+    // skip the first frames: camera.position still holds the pre-VR value until the first XR render
+    const y = camera.position.y;
+    if (calibT > CALIB_SKIP && y > 0.5 && y > calibMax) { calibMax = y; setViewOffset(HEAD_GAME_Y - calibMax); }
+    if (calibT >= CALIB_TIME) {
+      calibT = -1; wristKey = '';
+      tone(660, 0.1, 'triangle', 0.1); tone(990, 0.12, 'triangle', 0.1, 0, 0.1);
+      hands.forEach(h => buzz(h.pad, 0.5, 60));
+    }
+  }
+  window.__heightCalib = { get: () => ({ offset: view.position.y, rawHead: camera.position.y, gameHead: camera.position.y + view.position.y, measured: calibMax, calibrating: calibT >= 0 }), start: startCalibration };
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.033);
@@ -2080,7 +2124,8 @@
       const xc = renderer.xr.getCamera();
       xc.layers.enable(4);
       xc.cameras.forEach(c => c.layers.enable(4));
-    }
+      updateCalibration(dt);
+    } else if (view.position.y !== 0) view.position.y = 0; // height offset is VR-only
 
     if (!active) {
       rig.position.set(0, 0, 0);
@@ -2209,7 +2254,7 @@
         if (bh.normal.y > 0.5) onGround = true;
       }
     }
-    headW.copy(rig.position).add(camera.position);
+    headW.copy(rig.position).add(view.position).add(camera.position);
     const hb = probe(headW, 0.16);
     if (hb) {
       rig.position.addScaledVector(hb.normal, hb.depth);
@@ -2221,7 +2266,7 @@
     rig.position.z = Math.max(-SIZE + 0.3, Math.min(SIZE - 0.3, rig.position.z));
     if (rig.position.y < -1.5 || rig.position.y > 80) { rig.position.copy(spawnPoint()); vel.set(0, 0, 0); }
 
-    headW.copy(rig.position).add(camera.position);
+    headW.copy(rig.position).add(view.position).add(camera.position);
     if (inVR) {
       handPos = hands.map(h => h.touch ? h.anchor.clone() : handWorld(h, V3()));
     } else {
@@ -2377,6 +2422,21 @@
       const left = hands.find(h => h.side === 'left');
       if (left && wrist.parent !== left.ctrl) { left.ctrl.add(wrist); wrist.position.set(0, 0.05, 0.08); wrist.rotation.set(-1.0, 0, 0); }
       wrist.visible = !!left;
+      // calibrate-height button: poke it with the tip of the real right controller
+      const right = hands.find(h => h.side === 'right');
+      calBtnHover = false;
+      if (left && right) {
+        wrist.updateMatrixWorld();
+        const p = wrist.worldToLocal(right.ctrl.getWorldPosition(tmp)).sub(calBtnLocal);
+        const onBtn = Math.abs(p.x) < calBtnHalf.x + 0.01 && Math.abs(p.y) < calBtnHalf.y + 0.01;
+        calBtnHover = onBtn && Math.abs(p.z) < 0.08;
+        if (calBtnArmed && onBtn && Math.abs(p.z) < 0.03 && calibT < 0) {
+          calBtnArmed = false;
+          startCalibration();
+          tone(520, 0.08, 'triangle', 0.1); buzz(right.pad, 0.6, 40); buzz(left.pad, 0.6, 40);
+        }
+        if (!onBtn || Math.abs(p.z) > 0.06) calBtnArmed = true;
+      }
       drawWrist(others.size + 1, solo);
     } else {
       wrist.visible = false;
@@ -2713,6 +2773,7 @@
       await renderer.xr.setSession(session);
       window.__inVR = true;
       session.addEventListener('end', () => { window.__inVR = false; });
+      startCalibration();
       $('vrBig').hidden = true;
       $('overlay').classList.add('hidden');
       rig.position.copy(spawnPoint());
