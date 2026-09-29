@@ -2037,7 +2037,7 @@
   const keys = {};
 
   // Gorilla Tag style long arms: head + (controller - head) * ARM_REACH, all in rig space
-  const ARM_REACH = 1.8;
+  const ARM_REACH = 2.5;
   function handWorld(h, out) {
     return out.copy(h.ctrl.position).sub(camera.position).multiplyScalar(ARM_REACH)
       .add(camera.position).add(rig.position);
