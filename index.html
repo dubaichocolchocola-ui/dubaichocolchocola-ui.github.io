@@ -116,6 +116,7 @@
 
 <div id="hud"><div id="hudStatus" class="run" style="visibility:hidden"></div><div id="hudPlayers"></div><div id="hudCoins">🪙 0</div><button id="exitBtn">יציאה</button></div>
 <div id="cross"></div>
+<button id="vrBig" hidden style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;font:inherit;font-weight:900;font-size:clamp(28px,6vw,48px);padding:28px 56px;border-radius:999px;border:0;background:#ffcf4a;color:#2a1a05;cursor:pointer;box-shadow:0 10px 40px rgba(0,0,0,.45)">🥽 היכנס ל-VR</button>
 <div id="lockhint">לחץ על המסך כדי להסתכל עם העכבר</div>
 <div id="help">WASD הליכה · עכבר הסתכלות · רווח קפיצה (ליד קיר: קפיצת קיר) · Shift ריצה · לחיצה או F לתפוס · E ליד המחשב: קוד חדר · Q סוכרייה לפה</div>
 <div id="toast"></div>
@@ -2359,7 +2360,7 @@
   const cv = renderer.domElement;
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === cv;
-    $('lockhint').style.display = deskMode && !locked ? 'block' : 'none';
+    $('lockhint').style.display = deskMode && !locked && !hasVR ? 'block' : 'none';
   });
   cv.addEventListener('mousedown', () => {
     if (!deskMode) return;
@@ -2576,6 +2577,12 @@
   $('closeTerm').addEventListener('click', closeTerm);
   $('codeInput').addEventListener('input', () => { $('termErr').textContent = ''; });
 
+  let hasVR = false;
+  function showVrBig() {
+    if (!hasVR) return;
+    $('vrBig').hidden = false;
+    ['help', 'cross', 'lockhint'].forEach(id => { $(id).style.display = 'none'; });
+  }
   function startDesk() {
     if (myBan()) { checkBan(); return; }
     document.getElementById('kickMsg').hidden = true;
@@ -2591,6 +2598,7 @@
     $('help').style.display = 'block';
     $('cross').style.display = 'block';
     $('lockhint').style.display = 'block';
+    showVrBig();
   }
   function stopDesk(showMenu = true) {
     if (!deskMode) return;
@@ -2637,12 +2645,9 @@
     const b = $('vrBtn');
     if (ok) {
       b.hidden = false; b.disabled = false; b.textContent = 'היכנס ב-VR';
-      // On a headset, make entering VR the obvious first step: big button in the middle of the view
-      b.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;pointer-events:auto;font:inherit;font-weight:900;font-size:40px;padding:28px 64px;border-radius:999px;border:0;background:#ffcf4a;color:#2a1a05;cursor:pointer;box-shadow:0 10px 40px rgba(0,0,0,.5)';
-      document.body.appendChild(b);
-      $('lockhint').style.display = 'none';
-      // Installed as a Quest app (immersive launch): jump straight into VR; the button stays as a fallback
-      if (matchMedia('(display-mode: standalone)').matches || document.referrer.startsWith('android-app://')) enterVR(true);
+      hasVR = true; showVrBig();
+      // On a headset, go straight into VR (Gorilla-Tag style arm movement); the big button stays as a fallback
+      enterVR(true);
     }
     else {
       b.textContent = 'לא נמצאו משקפי VR';
@@ -2650,14 +2655,27 @@
     }
   })();
 
+  $('vrBig').addEventListener('click', () => $('vrBtn').click());
   $('vrBtn').addEventListener('click', () => enterVR(false));
+  // On a headset the flat mouse/keyboard view is useless: any trigger press on the page enters VR
+  document.addEventListener('click', e => {
+    if (!hasVR || renderer.xr.isPresenting || vrStarting) return;
+    if (e.target.closest('button, input, .termbox')) return;
+    enterVR(false);
+  });
+  let vrStarting = false;
   async function enterVR(silent) {
+    if (vrStarting || renderer.xr.isPresenting) return;
+    vrStarting = true;
     try {
       initAudio();
       stopDesk(false);
       myName = cleanName($('nameInput').value.trim()); saveName(myName);
       const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] });
       await renderer.xr.setSession(session);
+      window.__inVR = true;
+      session.addEventListener('end', () => { window.__inVR = false; });
+      $('vrBig').hidden = true;
       $('overlay').classList.add('hidden');
       rig.position.copy(spawnPoint());
       vel.set(0, 0, 0);
@@ -2671,12 +2689,22 @@
     } catch (e) {
       startDesk();
       if (!silent) toast('לא הצלחתי לפתוח VR. נסה לפתוח את הקישור ישירות בדפדפן של המשקפיים.', 4);
+    } finally {
+      vrStarting = false;
     }
   }
   // No start screen: go straight into the forest
   startDesk();
 })();
-if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // A new version took over: reload once so the player gets it (never mid-VR)
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded || window.__inVR) return;
+    reloaded = true; location.reload();
+  });
+}
 </script>
 </body>
 </html>
