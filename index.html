@@ -1257,11 +1257,13 @@
       u.cool = Math.max(0, u.cool - dt);
       u.press = Math.max(0, u.press - dt);
       m.position.y = u.baseY - (u.press > 0 ? 0.012 : 0);
-      if (handPoints) for (const p of handPoints) {
-        m.getWorldPosition(_kw); if (p.distanceTo(_kw) < 0.07) pressKey(m);
-      }
+    }
+    // VR: real hand positions (handWorld); each hand presses its nearest key within KB_PRESS_R
+    if (handPoints) for (const f of vrPressNearest('key', handPoints, kbKeys, (m, o) => m.getWorldPosition(o), KB_PRESS_R, 0)) {
+      vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15);
     }
   }
+  const KB_PRESS_R = 0.1;
   let lastBlink = -1;
   const _kw = new THREE.Vector3();
 
@@ -1340,13 +1342,18 @@
     if (list.length > 10) { c.textAlign = 'center'; c.fillStyle = '#fff'; c.font = '700 18px Rubik, sans-serif'; c.fillText('ועוד ' + (list.length - 10) + '…', 224, 500); }
     listTex.needsUpdate = true;
   }
-  function boardClick(uv) {
+  function boardClick(uv, vr = false) {
     const px = uv.x * 448, py = (1 - uv.y) * 512;
     const i = Math.round((py - ROW_Y0) / ROW_H);
     const p = boardList[i];
     if (!p || p.me || Math.abs(py - (ROW_Y0 + i * ROW_H)) > 14) return false;
     if (px >= BTN_MUTE[0] && px <= BTN_MUTE[1]) { toggleMute(p.peer); return true; }
-    if (px >= BTN_REP[0] && px <= BTN_REP[1]) { if (!reportedPeers.has(p.peer)) openReport(p.peer); return true; }
+    if (px >= BTN_REP[0] && px <= BTN_REP[1]) {
+      // the report form is an HTML dialog, which can't be seen in VR: don't open an invisible, stuck dialog there
+      if (vr) { tone(160, 0.15, 'square', 0.08); return true; }
+      if (!reportedPeers.has(p.peer)) openReport(p.peer);
+      return true;
+    }
     return false;
   }
   function toggleMute(peer) {
@@ -1358,6 +1365,129 @@
     toast(mutedPeers.has(peer) ? `השתקת את ${n}` : `ביטלת השתקה ל${n}`, 2);
     lastListKey = '';
   }
+
+  // ================= VR buttons =================
+  // Every in-world button is pressed with the REAL hand position (handWorld), never the locomotion-locked handPos.
+  // A button fires when a hand arrives at it (not while it rests there), each button has its own cooldown, and
+  // each hand only presses the NEAREST button in range (keys are closer together than the press radius).
+  const ADMIN_PRESS_R = 0.14, ADMIN_COOL = 0.8, WARD_PRESS_R = 0.12, WARD_COOL = 0.3;
+  const SHOP_PRESS_R = 0.35, SHOP_COOL = 0.8, PLANE_COOL = 0.4;
+  const vrPress = new Map(), vrCool = new Map();
+  const _vc = V3(), _vl = V3(), _vbox = new THREE.Box3();
+  function vrPressTick(dt) { vrCool.forEach((c, k) => { if (c > 0) vrCool.set(k, c - dt); }); }
+  // Enter/leave detection for one target with a single region test (used for panels/planes).
+  function vrPressCheck(key, pts, test, cool) {
+    let s = vrPress.get(key);
+    if (!s) vrPress.set(key, s = { inside: false });
+    let hit = null;
+    for (const t of pts) if (test(t.p, s.inside)) { hit = t; break; }
+    const enter = hit && !s.inside;
+    s.inside = !!hit;
+    if (!enter || (vrCool.get(key) || 0) > 0) return null;
+    vrCool.set(key, cool);
+    return hit;
+  }
+  // Per hand: the nearest item within r fires once when the hand arrives at it; the hand keeps "holding" that item
+  // until it moves r + 3 cm away, so resting on a button doesn't repeat.
+  function vrPressNearest(group, pts, items, centerOf, r, cool) {
+    const fired = [];
+    for (const t of pts) {
+      const sk = group + '|' + t.h.side;
+      let st = vrPress.get(sk);
+      if (!st) vrPress.set(sk, st = { cur: null });
+      if (st.cur) { const c = centerOf(st.cur, _vc); if (c && t.p.distanceTo(c) < r + 0.03) continue; st.cur = null; }
+      let best = null, bd = r;
+      for (const it of items) { const c = centerOf(it, _vc); if (!c) continue; const d = t.p.distanceTo(c); if (d < bd) { bd = d; best = it; } }
+      if (!best) continue;
+      st.cur = best;
+      if ((vrCool.get(best) || 0) > 0) continue;
+      vrCool.set(best, cool);
+      fired.push({ item: best, t });
+    }
+    return fired;
+  }
+  const meshCenter = (m, out) => _vbox.setFromObject(m).getCenter(out);
+  // What each press does (swappable so the button test can record presses instead of performing them)
+  const vrActions = {
+    key: m => pressKey(m),
+    admin: b => pressAdminButton(b),
+    wardrobe: b => pressWardrobe(b),
+    shop: d => { tone(880, 0.08, 'triangle', 0.1); shopClick(d); },
+    board: uv => boardClick(uv, true),
+    ban: uv => banBoardClick(uv),
+    calibrate: (left, right) => { startCalibration(); tone(520, 0.08, 'triangle', 0.1); buzz(right.pad, 0.6, 40); buzz(left.pad, 0.6, 40); }
+  };
+  function planePress(pl, pts, fn) {
+    const w = pl.geometry.parameters.width, hh = pl.geometry.parameters.height;
+    let uv = null;
+    const t = vrPressCheck(pl, pts, (p, inside) => {
+      const l = pl.worldToLocal(_vl.copy(p));
+      const on = Math.abs(l.z) < (inside ? 0.07 : 0.04) && Math.abs(l.x) < w / 2 && Math.abs(l.y) < hh / 2;
+      if (on && !uv) uv = { x: l.x / w + 0.5, y: l.y / hh + 0.5 };
+      return on;
+    }, PLANE_COOL);
+    if (t && uv && fn(uv) !== false) buzz(t.h.pad, 0.25, 20);
+  }
+  const shopCenter = (d, out) => out.set(d.hit.position.x, 1.25, d.hit.position.z); // the item standing on the pedestal
+  function updateVRButtons(pts) {
+    for (const f of vrPressNearest('admin', pts, adminButtons, (b, o) => meshCenter(b.mesh, o), ADMIN_PRESS_R, ADMIN_COOL)) { vrActions.admin(f.item); buzz(f.t.h.pad, 0.3, 30); }
+    for (const f of vrPressNearest('ward', pts, wardrobeButtons, (b, o) => meshCenter(b.mesh, o), WARD_PRESS_R, WARD_COOL)) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
+    for (const f of vrPressNearest('shop', pts, shopDisplays, shopCenter, SHOP_PRESS_R, SHOP_COOL)) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.4, 30); }
+    boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
+    if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv));
+  }
+  // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
+  // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
+  window.__vrButtonsTest = () => {
+    const rec = [], saved = Object.assign({}, vrActions);
+    Object.keys(vrActions).forEach(k => { vrActions[k] = (...a) => { rec.push({ k, a }); return true; }; });
+    const R = { side: 'right', pad: null }, L = { side: 'left', pad: null }, far = V3(0, -50, 0), dt = 1 / 72;
+    const world = pts => { vrPressTick(dt); updateKeyboard(dt, pts); updateVRButtons(pts); };
+    const wristStep = pts => { vrPressTick(dt); updateWristButton(pts, L, R); };
+    const results = [];
+    const check = (kind, label, point, expect, step = world) => {
+      vrPress.clear(); vrCool.clear(); rec.length = 0;
+      const at = () => [{ p: point.clone(), h: R }], away = () => [{ p: far.clone(), h: R }];
+      step(away()); step(at());
+      const first = rec.splice(0);
+      for (let i = 0; i < 30; i++) step(at());
+      const repeats = rec.splice(0).length;
+      for (let i = 0; i < 72; i++) step(away());
+      step(at());
+      const again = rec.splice(0).length;
+      const ok = first.length === 1 && expect(first[0]) && repeats === 0 && again === 1;
+      results.push({ kind, label, ok, fired: first.map(r => r.k).join(',') || '-', repeats, again });
+    };
+    const was = { visible: wrist.visible, parent: wrist.parent, pos: wrist.position.clone(), q: wrist.quaternion.clone() };
+    try {
+      kbKeys.forEach(m => check('key', String(m.userData.value), m.getWorldPosition(V3()), r => r.k === 'key' && r.a[0] === m));
+      adminButtons.forEach(b => check('admin', b.door ? (b.take ? 'door open' : 'door close') : `${b.id} ${b.take ? 'take' : 'return'}`, meshCenter(b.mesh, V3()), r => r.k === 'admin' && r.a[0] === b));
+      wardrobeButtons.forEach(b => check('wardrobe', b.act, meshCenter(b.mesh, V3()), r => r.k === 'wardrobe' && r.a[0] === b));
+      shopDisplays.forEach(d => check('shop', d.it.name, shopCenter(d, V3()), r => r.k === 'shop' && r.a[0] === d));
+      // board: the mute button of row 1 on each side; the uv handed to boardClick must land on that button
+      boardPlanes.forEach((pl, i) => {
+        const w = pl.geometry.parameters.width, hh = pl.geometry.parameters.height;
+        const ux = (BTN_MUTE[0] + BTN_MUTE[1]) / 2 / 448, vy = 1 - (ROW_Y0 + ROW_H) / 512;
+        const p = pl.localToWorld(V3((ux - 0.5) * w, (vy - 0.5) * hh, 0.02));
+        check('board', 'side ' + (i + 1) + ' mute row 2', p, r => r.k === 'board' && Math.abs(r.a[0].x - ux) < 0.01 && Math.abs(r.a[0].y - vy) < 0.01);
+      });
+      if (banPlane) check('ban', 'remove-ban row 1', banPlane.localToWorld(V3((79 / 512 - 0.5) * 1.8, (0.5 - BAN_ROW_Y0 / 320) * 1.125, 0.02)),
+        r => r.k === 'ban' && Math.abs(r.a[0].x * 512 - 79) < 3 && Math.abs((1 - r.a[0].y) * 320 - BAN_ROW_Y0) < 3);
+      // wrist panel: placed at an arbitrary pose, pressed at the calibrate button
+      scene.add(wrist); wrist.position.set(1, 1.1, -0.4); wrist.quaternion.setFromEuler(new THREE.Euler(-0.7, 0.4, 0.2)); wrist.updateMatrixWorld(true);
+      const cb = wrist.localToWorld(calBtnLocal.clone().add(V3(0, 0, 0.015)));
+      check('wrist', 'calibrate height', cb, r => r.k === 'calibrate', wristStep);
+      // and a point on the panel but off the button must not press it
+      vrPress.clear(); vrCool.clear(); rec.length = 0;
+      wristStep([{ p: far.clone(), h: R }]); wristStep([{ p: wrist.localToWorld(V3(0, 0.03, 0.015)), h: R }]);
+      results.push({ kind: 'wrist', label: 'panel text (not the button)', ok: rec.length === 0, fired: rec.map(r => r.k).join(',') || '-', repeats: 0, again: 0 });
+    } finally {
+      Object.assign(vrActions, saved); vrPress.clear(); vrCool.clear();
+      if (was.parent) was.parent.add(wrist); else scene.remove(wrist);
+      wrist.position.copy(was.pos); wrist.quaternion.copy(was.q); wrist.visible = was.visible;
+    }
+    return results;
+  };
 
   // ================= Collision helpers =================
   function probe(p, r) {
@@ -1808,7 +1938,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v12';
+  const GAME_VERSION = 'v13';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -1819,7 +1949,20 @@
   const wristTex = new THREE.CanvasTexture(wristCv);
   const wrist = new THREE.Mesh(new THREE.PlaneGeometry(WRIST_W, WRIST_H), new THREE.MeshBasicMaterial({ map: wristTex, transparent: true }));
   wrist.visible = false;
-  let wristKey = '', calBtnArmed = true, calBtnHover = false;
+  let wristKey = '', calBtnHover = false;
+  const WRIST_LOCAL_POS = V3(0, 0.05, 0.08), WRIST_LOCAL_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-1.0, 0, 0));
+  const _wq = new THREE.Quaternion(), _wl = V3();
+  // calibrate-height button on the wrist panel: pressed by the right hand's real position (handWorld)
+  function updateWristButton(pts, left, right) {
+    calBtnHover = false;
+    if (!left || !right || !pts) return;
+    const rp = pts.filter(t => t.h === right);
+    const local = p => wrist.worldToLocal(_wl.copy(p)).sub(calBtnLocal);
+    const onBtn = (p, slack) => { const l = local(p); return Math.abs(l.x) < calBtnHalf.x + slack && Math.abs(l.y) < calBtnHalf.y + slack; };
+    calBtnHover = rp.some(t => onBtn(t.p, 0.01) && Math.abs(local(t.p).z) < 0.08);
+    const t = vrPressCheck('calib', rp, (p, inside) => onBtn(p, 0.01) && Math.abs(local(p).z) < (inside ? 0.06 : 0.03), 0.8);
+    if (t && calibT < 0) vrActions.calibrate(left, right);
+  }
   function drawWrist(players, solo) {
     const calibrating = calibT >= 0;
     const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}`;
@@ -2387,7 +2530,12 @@
     if (myHammer) poseHammer(myHammer, handPos[1], Math.atan2(-tmp.x, -tmp.z), slapT > 0 ? -0.9 : 0);
 
     // ---- Room computer ----
-    updateKeyboard(dt, inVR ? handPos : null);
+    // Button presses use the REAL hand positions: handPos is locked to an anchor HAND_R above a touched surface
+    // (for locomotion), so a hand resting on the desk/panel could never reach the buttons on it.
+    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: handWorld(h, V3()), h })) : null;
+    vrPressTick(dt);
+    updateKeyboard(dt, pressPts);
+    if (pressPts) updateVRButtons(pressPts);
     drawPlayerList();
     if (kbBlink !== lastBlink && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 6) { lastBlink = kbBlink; drawMonitor(); }
     nearComputer = !inVR && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 2.2;
@@ -2482,23 +2630,17 @@
     // ---- Status display ----
     if (inVR) {
       const left = hands.find(h => h.side === 'left');
-      if (left && wrist.parent !== left.ctrl) { left.ctrl.add(wrist); wrist.position.set(0, 0.05, 0.08); wrist.rotation.set(-1.0, 0, 0); }
-      wrist.visible = !!left;
-      // calibrate-height button: poke it with the tip of the real right controller
-      const right = hands.find(h => h.side === 'right');
-      calBtnHover = false;
-      if (left && right) {
+      // The panel rides on the VISIBLE (long-arm) left hand, oriented like the left controller, so the long right
+      // hand (handWorld) can actually reach it. On the real controller it would sit up to ~25 cm from the long hand.
+      if (wrist.parent !== scene) scene.add(wrist);
+      if (left) {
+        left.ctrl.getWorldQuaternion(_wq);
+        wrist.quaternion.copy(_wq).multiply(WRIST_LOCAL_Q);
+        wrist.position.copy(WRIST_LOCAL_POS).applyQuaternion(_wq).add(handPos[hands.indexOf(left)]);
         wrist.updateMatrixWorld();
-        const p = wrist.worldToLocal(right.ctrl.getWorldPosition(tmp)).sub(calBtnLocal);
-        const onBtn = Math.abs(p.x) < calBtnHalf.x + 0.01 && Math.abs(p.y) < calBtnHalf.y + 0.01;
-        calBtnHover = onBtn && Math.abs(p.z) < 0.08;
-        if (calBtnArmed && onBtn && Math.abs(p.z) < 0.03 && calibT < 0) {
-          calBtnArmed = false;
-          startCalibration();
-          tone(520, 0.08, 'triangle', 0.1); buzz(right.pad, 0.6, 40); buzz(left.pad, 0.6, 40);
-        }
-        if (!onBtn || Math.abs(p.z) > 0.06) calBtnArmed = true;
       }
+      wrist.visible = !!left;
+      updateWristButton(pressPts, left, hands.find(h => h.side === 'right'));
       drawWrist(others.size + 1, solo);
     } else {
       wrist.visible = false;
