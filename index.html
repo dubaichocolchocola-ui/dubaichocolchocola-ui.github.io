@@ -771,6 +771,7 @@
   const adminIds = new Set();
   let adminDoor = null, adminDoorOpenZ = 0, adminDoorShut = 0;
   const standHammers = {}, adminButtons = [];
+  let adminFarWall = null, badgeBoard = null; const badgeButtons = [];
   let banCv = null, banTex = null, banPlane = null, bans = [], banKey = '';
   const BAN_ROW_Y0 = 96, BAN_ROW_H = 42;
   function drawBanBoard() {
@@ -847,6 +848,31 @@
     if (id) { myHammer = makeHammer(id); scene.add(myHammer); }
     sendTimer = 0;
   }
+  // "My tag" board: pick OWNER / ADMIN / none; only a tag you're allowed to wear can be picked
+  function pressBadge(b) {
+    if (b.id !== 'NONE' && !tagAllowed(b.id, myUserId)) {
+      tone(160, 0.15, 'square', 0.08);
+      toast(b.id === 'OWNER' ? 'רק הבעלים יכול לבחור OWNER' : 'רק אדמינים יכולים לבחור ADMIN', 2);
+      return;
+    }
+    try { localStorage.setItem('forestTagBadge', b.id); } catch (e) {}
+    tone(b.id === 'NONE' ? 500 : 880, 0.1, 'triangle', 0.12);
+    sendTimer = 0; badgeKey = '';
+  }
+  // the chosen button stands out (pushed forward, bigger) and lights up
+  let badgeKey = '';
+  function refreshBadgeBoard() {
+    const cur = myTagNow() || 'NONE';
+    if (cur === badgeKey) return;
+    badgeKey = cur;
+    badgeButtons.forEach(b => {
+      const on = b.id === cur;
+      b.mesh.material.emissive.setHex(on ? b.color : 0x000000);
+      b.mesh.material.emissiveIntensity = on ? 0.9 : 0;
+      b.mesh.scale.setScalar(on ? 1.15 : 1);
+      b.mesh.position.z = on ? 0.03 : 0.012;
+    });
+  }
   function pressAdminButton(b) {
     if (!isAdmin()) { toast('רק אדמינים יכולים ללחוץ על זה', 1.8); tone(160, 0.15, 'square', 0.08); return; }
     tone(b.take ? 880 : 300, 0.1, 'triangle', 0.12);
@@ -886,8 +912,41 @@
     ['Cube', 'Cube.001', 'Cube.003', 'Cube.006'].forEach(n => {
       if (!parts[n]) return;
       const bb = new THREE.Box3().setFromObject(parts[n]);
-      colliders.push({ min: bb.min.clone(), max: bb.max.clone() });
+      const c = { min: bb.min.clone(), max: bb.max.clone() };
+      colliders.push(c);
+      if (n === 'Cube.006') adminFarWall = c;
     });
+    // ---- "My tag" board on the wall opposite the door (inner face of Cube.006), eye height, facing the door ----
+    if (parts['Cube.006']) {
+      const w = parts['Cube.006']; w.geometry.computeBoundingBox();
+      const innerX = w.position.x + w.geometry.boundingBox.min.x;
+      badgeBoard = new THREE.Group();
+      badgeBoard.position.set(innerX - 0.012, -0.15, 0); // local y -0.15 = ~1.2 m in the world
+      badgeBoard.rotation.y = -Math.PI / 2;              // front (+z) faces -x: into the room, toward the door
+      g.add(badgeBoard);
+      const bcv = document.createElement('canvas'); bcv.width = 512; bcv.height = 320;
+      const bc = bcv.getContext('2d');
+      bc.fillStyle = '#1b1b1b'; bc.fillRect(0, 0, 512, 320);
+      bc.strokeStyle = '#c0503a'; bc.lineWidth = 8; bc.strokeRect(4, 4, 504, 312);
+      bc.fillStyle = '#ffffff'; bc.direction = 'rtl'; bc.textAlign = 'center'; bc.textBaseline = 'middle'; bc.font = '900 64px Rubik, sans-serif';
+      bc.fillText('התג שלי', 256, 72);
+      badgeBoard.add(new THREE.Mesh(new THREE.PlaneGeometry(0.56, 0.35), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(bcv) })));
+      [['OWNER', 'OWNER', 0x8b5a2b], ['ADMIN', 'ADMIN', 0xd8332a], ['NONE', 'בלי', 0x7a7a7a]].forEach(([id, text, col], i) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: 0x000000 }));
+        m.position.set(-0.18 + i * 0.18, -0.06, 0.012);
+        const lcv = document.createElement('canvas'); lcv.width = 256; lcv.height = 128;
+        const lc = lcv.getContext('2d'); lc.fillStyle = '#ffffff'; lc.textAlign = 'center'; lc.textBaseline = 'middle'; lc.direction = 'rtl';
+        // fit the text to the button: as big as possible, at most 224 px wide on the 256 px canvas
+        let fsz = 100; lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif';
+        const tw = lc.measureText(text).width; if (tw > 224) { fsz = Math.floor(fsz * 224 / tw); lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif'; }
+        lc.fillText(text, 128, 68);
+        const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, depthWrite: false }));
+        lab.position.z = 0.0105; m.add(lab);
+        badgeBoard.add(m);
+        badgeButtons.push({ mesh: m, id, color: col });
+      });
+      g.updateMatrixWorld(true);
+    }
     // hammers on the stands + their green (take) / red (put back) buttons
     [['KICK', ['Cube.009', 'Cylinder', 'Text'], 'Cube.011', 'Cube.010'],
      ['BAN', ['Cube.012', 'Cylinder.001', 'Text.001'], 'Cube.004', 'Cube.014'],
@@ -916,6 +975,37 @@
   }
   const isAdmin = () => !!myUserId && (myUserId === OWNER_ID || adminIds.has(myUserId));
   const isAdminUid = uid => !!uid && (uid === OWNER_ID || adminIds.has(uid));
+  // ---- Tag over the head: OWNER (brown) only for the owner, ADMIN (red) only for the owner and admins ----
+  const TAG_COLORS = { OWNER: '#8b5a2b', ADMIN: '#d8332a' };
+  const tagAllowed = (t, uid) => t === 'OWNER' ? uid === OWNER_ID : t === 'ADMIN' ? isAdminUid(uid) : false;
+  // my tag: the choice on the admin-room board (localStorage), if allowed; otherwise the default
+  // (owner -> OWNER, admin -> ADMIN, everyone else none). 'NONE' = chose no tag.
+  function myTagNow() {
+    let c = null; try { c = localStorage.getItem('forestTagBadge'); } catch (e) {}
+    if (c === 'NONE') return '';
+    if (c && tagAllowed(c, myUserId)) return c;
+    return myUserId === OWNER_ID ? 'OWNER' : isAdmin() ? 'ADMIN' : '';
+  }
+  function makeTag(text) {
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
+    const c = cv.getContext('2d');
+    c.beginPath(); if (c.roundRect) c.roundRect(14, 14, 484, 100, 40); else c.rect(14, 14, 484, 100);
+    c.fillStyle = TAG_COLORS[text]; c.fill();
+    c.lineWidth = 10; c.strokeStyle = '#ffffff'; c.stroke();
+    c.fillStyle = '#ffffff'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = '900 70px Rubik, Arial, sans-serif';
+    c.fillText(text, 256, 68);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthWrite: false }));
+    sp.scale.set(0.8, 0.2, 1);
+    return sp;
+  }
+  const TAG_ABOVE = 0.66; // above the head (the name label is at ~0.45)
+  function setAvatarTag(a, t) {
+    t = TAG_COLORS[t] ? t : '';
+    if ((a.tagText || '') === t) return;
+    if (a.tagSprite) { a.root.remove(a.tagSprite); a.tagSprite.material.map.dispose(); a.tagSprite.material.dispose(); a.tagSprite = null; }
+    a.tagText = t;
+    if (t) { a.tagSprite = makeTag(t); a.root.add(a.tagSprite); if (a.head) a.tagSprite.position.copy(a.head.position).add(V3(0, TAG_ABOVE, 0)); }
+  }
   // The uid shown as this player's ID: the server account when there is one, otherwise (the APK, no server) a random
   // local uid made once and kept in localStorage, so each headset has a fixed ID even offline. Display only: it never
   // grants admin and is never sent as the account uid.
@@ -1170,6 +1260,11 @@
       c.font = '700 48px Consolas, monospace';
       c.fillText((kbText || '') + (kbBlink % 2 ? '_' : ' '), 28, 130);
     }
+    // room line under the typing line: PUBLIC / the room code, or OFFLINE without a server (e.g. the APK)
+    let rl = 'OFFLINE';
+    try { rl = room ? (roomCode ? roomCode.toUpperCase() : 'PUBLIC') : 'OFFLINE'; } catch (e) {} // room is declared further down
+    c.font = '700 34px Consolas, monospace'; c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa';
+    c.fillText('ROOM: ' + rl, 28, 255);
     monTex.needsUpdate = true;
   }
   function kbSay(msg) { toast(msg, 2.5); }
@@ -1359,6 +1454,7 @@
   function handProbeSkip(p) {
     _hzSkip.clear();
     if (deskCollider && keyboardZone().containsPoint(p)) _hzSkip.add(deskCollider);
+    if (adminFarWall && badgeBoard && objBox(badgeBoard, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminFarWall);
     if (wardCollider && wardrobeButtons.some(b => objBox(b.mesh, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
     for (const d of shopDisplays) if (d.pedCol && pedestalZone(d).containsPoint(p)) _hzSkip.add(d.pedCol);
     return _hzSkip.size ? _hzSkip : null;
@@ -1531,7 +1627,7 @@
   // Every in-world button is pressed with the REAL hand position (handWorld), never the locomotion-locked handPos.
   // A button fires when a hand arrives at it (not while it rests there), each button has its own cooldown, and
   // each hand only presses the NEAREST button in range (keys are closer together than the press radius).
-  const ADMIN_PRESS_R = 0.14, ADMIN_COOL = 0.8;
+  const ADMIN_PRESS_R = 0.14, ADMIN_COOL = 0.8, BADGE_PRESS_R = 0.1;
   const PLANE_COOL = 0.4;
   const vrPress = new Map(), vrCool = new Map();
   const _vc = V3(), _vl = V3(), _vbox = new THREE.Box3();
@@ -1572,6 +1668,7 @@
   const vrActions = {
     key: m => pressKey(m),
     admin: b => pressAdminButton(b),
+    badge: b => pressBadge(b),
     wardrobe: b => pressWardrobe(b),
     shop: d => { tone(880, 0.08, 'triangle', 0.1); shopClick(d); },
     board: uv => boardClick(uv, true),
@@ -1611,6 +1708,7 @@
   const objBox = (o, box) => { o.updateWorldMatrix(true, false); return box.setFromObject(o); };
   const boxCenter = (o, out) => objBox(o, _pb).getCenter(out);
   function updateVRButtons(pts) {
+    for (const f of vrPressNearest('badge', pts, badgeButtons, (b, o) => boxCenter(b.mesh, o), BADGE_PRESS_R, 0.5)) { vrActions.badge(f.item); buzz(f.t.h.pad, 0.3, 30); }
     for (const f of vrPressNearest('admin', pts, adminButtons, (b, o) => meshCenter(b.mesh, o), ADMIN_PRESS_R, ADMIN_COOL)) { vrActions.admin(f.item); buzz(f.t.h.pad, 0.3, 30); }
     for (const f of vrPressBoxes('ward', pts, wardrobeButtons, (b, box) => objBox(b.mesh, box))) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
     for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => objBox(d.spin, box))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
@@ -1750,6 +1848,9 @@
           const lab = b.mesh.children[0], front = V3(0, 0, 1).applyQuaternion(lab.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
           return b.act + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
         });
+        const bn0 = V3(0, 0, 1).applyQuaternion(badgeBoard.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
+        const badgeRes = badgeButtons.map(b => { const box = objBox(b.mesh, new THREE.Box3()).expandByScalar(0.03), c = box.getCenter(V3()); return b.id + ': straight ' + reach(box, c, bn0, 0) + ', 45° ' + reach(box, c, bn0, 0.8); });
+        ok('"My tag" board buttons reachable by the wing tip', badgeRes.every(s => !/stopped|missed|can not/.test(s)), badgeRes.join(' | '));
         ok('wardrobe buttons reachable by the wing tip', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
         const bob0 = shopDisplays.map(d => d.spin.position.y);
         shopDisplays.forEach(d => { d.spin.position.y = -0.04; }); // lowest point of the ±4 cm bob
@@ -1851,7 +1952,70 @@
       for (let y = 0; y < H; y++) img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
       cx.putImageData(img, 0, 0); shopImg = cv.toDataURL('image/png'); rt.dispose();
     } catch (e) { shopImg = ''; }
-    return { results: out, monitor, board, wrist: wristImg, shop: shopImg };
+    // ---- tags over the head, the "My tag" board, the ROOM line ----
+    const imgs = {};
+    {
+      const saved = { uid: myUserId, admins: new Set(adminIds), mode: kbMode };
+      let savedBadge = null; try { savedBadge = localStorage.getItem('forestTagBadge'); } catch (e) {}
+      const setBadge = v => { try { if (v === null) localStorage.removeItem('forestTagBadge'); else localStorage.setItem('forestTagBadge', v); } catch (e) {} };
+      try {
+        const as = (uid, admin, badge) => { myUserId = uid; adminIds.clear(); if (admin) adminIds.add(uid); setBadge(badge); return myTagNow(); };
+        ok('tag: owner, no choice -> OWNER', as(OWNER_ID, false, null) === 'OWNER');
+        ok('tag: owner chose ADMIN -> ADMIN', as(OWNER_ID, false, 'ADMIN') === 'ADMIN');
+        ok('tag: owner chose none -> no tag', as(OWNER_ID, false, 'NONE') === '');
+        ok('tag: admin, no choice -> ADMIN', as('u_ADMINTEST', true, null) === 'ADMIN');
+        ok('tag: admin who saved OWNER -> ADMIN (OWNER not allowed)', as('u_ADMINTEST', true, 'OWNER') === 'ADMIN');
+        ok('tag: normal player -> no tag, even with ADMIN saved', as('u_NORMAL', false, null) === '' && as('u_NORMAL', false, 'ADMIN') === '');
+        // the board: a normal player can't pick ADMIN; an admin can pick none; the owner can pick OWNER
+        const bOf = id => badgeButtons.find(b => b.id === id);
+        as('u_NORMAL', false, null); pressBadge(bOf('ADMIN'));
+        let st = null; try { st = localStorage.getItem('forestTagBadge'); } catch (e) {}
+        ok('board: normal player pressing ADMIN is refused', st === null && myTagNow() === '');
+        as('u_ADMINTEST', true, null); pressBadge(bOf('NONE'));
+        ok('board: admin presses none -> no tag', myTagNow() === '');
+        as(OWNER_ID, false, null); pressBadge(bOf('ADMIN')); pressBadge(bOf('OWNER')); refreshBadgeBoard();
+        const lit = badgeButtons.filter(b => b.mesh.material.emissive.getHex() !== 0).map(b => b.id);
+        ok('board: owner picks OWNER -> OWNER lit and bigger, others not', myTagNow() === 'OWNER' && lit.join() === 'OWNER' && bOf('OWNER').mesh.scale.x > 1.1 && bOf('ADMIN').mesh.scale.x === 1, 'lit: ' + lit.join());
+        // the board is on the wall opposite the door, facing the door, at eye height
+        badgeBoard.updateWorldMatrix(true, false);
+        const bp = badgeBoard.getWorldPosition(V3()), bn = V3(0, 0, 1).applyQuaternion(badgeBoard.getWorldQuaternion(new THREE.Quaternion()));
+        const door = colliders.find(c => c.admin), dc = door.min.clone().add(door.max).multiplyScalar(0.5);
+        const toDoor = dc.clone().sub(bp).setY(0).normalize();
+        const wallDist = Math.min(Math.abs(bp.x - adminFarWall.min.x), Math.abs(bp.x - adminFarWall.max.x), Math.abs(bp.z - adminFarWall.min.z), Math.abs(bp.z - adminFarWall.max.z));
+        ok('board on the far wall, facing the door, ~1.2 m high', wallDist < 0.05 && bn.dot(toDoor) > 0.95 && Math.abs(bp.y - 1.2) < 0.15,
+          'wall ' + (wallDist * 100).toFixed(1) + ' cm, facing door ' + bn.dot(toDoor).toFixed(2) + ', y ' + bp.y.toFixed(2));
+        // other players' tags come from presence field t and are only shown when that player may wear them
+        const peerTag = (u, t, admin) => {
+          adminIds.clear(); if (admin) adminIds.add(u);
+          const p = { peer: '__tagtest', kind: 'viewer', presence: { h: [0, 1.2, 0], l: [-0.3, 0.8, -0.2], r: [0.3, 0.8, -0.2], n: 'x', c: '#ffffff', u, t } };
+          upsertPeer(p); const o = others.get('__tagtest');
+          poseAvatar(o, V3(5, 1.2, 5), V3(4.7, 0.8, 4.8), V3(5.3, 0.8, 4.8), 0);
+          const res = { tag: o.tagText || '', dy: o.tagSprite ? o.tagSprite.position.y - o.head.position.y : null, sc: o.tagSprite ? o.tagSprite.scale.x + 'x' + o.tagSprite.scale.y : '' };
+          removePeer(p); return res;
+        };
+        const r1 = peerTag(OWNER_ID, 'OWNER', false), r2 = peerTag('u_FAKE', 'OWNER', false), r3 = peerTag('u_ADM2', 'ADMIN', true), r4 = peerTag('u_ADM2', 'OWNER', true), r5 = peerTag('u_FAKE', 'ADMIN', false);
+        ok('presence t: the owner shows OWNER, 0.66 above the head, 0.8x0.2', r1.tag === 'OWNER' && Math.abs(r1.dy - 0.66) < 1e-6 && r1.sc === '0.8x0.2', JSON.stringify(r1));
+        ok('presence t: a non-owner sending OWNER shows nothing', r2.tag === '');
+        ok('presence t: an admin shows ADMIN, but not OWNER', r3.tag === 'ADMIN' && r4.tag === '');
+        ok('presence t: a normal player sending ADMIN shows nothing', r5.tag === '');
+        // images: the two tags, the board from the doorway side, the screen with the ROOM line
+        imgs.tagOwner = makeTag('OWNER').material.map.image.toDataURL('image/png');
+        imgs.tagAdmin = makeTag('ADMIN').material.map.image.toDataURL('image/png');
+        kbMode = 'code'; drawMonitor(); imgs.monitorRoom = monCv.toDataURL('image/png');
+        const W = 640, H = 400, rt = new THREE.WebGLRenderTarget(W, H), cam = new THREE.PerspectiveCamera(55, W / H, 0.05, 100);
+        cam.position.copy(bp).addScaledVector(bn, 1.6); cam.position.y = 1.3; cam.lookAt(bp); cam.updateMatrixWorld();
+        const xrOn = renderer.xr.enabled, old = renderer.getRenderTarget(); renderer.xr.enabled = false;
+        renderer.setRenderTarget(rt); renderer.render(scene, cam); renderer.setRenderTarget(old); renderer.xr.enabled = xrOn;
+        const px = new Uint8Array(W * H * 4); renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
+        const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d'), im = cx.createImageData(W, H);
+        for (let y = 0; y < H; y++) im.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+        cx.putImageData(im, 0, 0); imgs.badgeBoard = cv.toDataURL('image/png'); rt.dispose();
+      } finally {
+        myUserId = saved.uid; adminIds.clear(); saved.admins.forEach(x => adminIds.add(x)); setBadge(savedBadge);
+        kbMode = saved.mode; drawMonitor(); badgeKey = ''; refreshBadgeBoard();
+      }
+    }
+    return { results: out, monitor, board, wrist: wristImg, shop: shopImg, imgs };
   };
   // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
   // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
@@ -1900,6 +2064,7 @@
         world([{ p: pL.clone().add(V3(0.02, 0, 0)), h: R }]); world([{ p: pL.clone(), h: R }]);
         results.push({ kind: 'keyL', label: 'small wiggle on L = one press', ok: rec.length === 1, fired: rec.map(r => r.a[0].userData.value).join(','), repeats: 0, again: 0 });
       }
+      badgeButtons.forEach(b => check('badge', b.id, boxCenter(b.mesh, V3()), r => r.k === 'badge' && r.a[0] === b));
       adminButtons.forEach(b => check('admin', b.door ? (b.take ? 'door open' : 'door close') : `${b.id} ${b.take ? 'take' : 'return'}`, meshCenter(b.mesh, V3()), r => r.k === 'admin' && r.a[0] === b));
       wardrobeButtons.forEach(b => check('wardrobe', b.act, boxCenter(b.mesh, V3()), r => r.k === 'wardrobe' && r.a[0] === b));
       shopDisplays.forEach(d => check('shop', d.it.name, boxCenter(d.spin, V3()), r => r.k === 'shop' && r.a[0] === d));
@@ -2155,6 +2320,7 @@
     a.body.position.set(h.x, h.y - 0.45, h.z);
     a.flame.position.copy(a.body.position);
     a.label.position.set(h.x, h.y + 0.45, h.z);
+    if (a.tagSprite) a.tagSprite.position.set(h.x, h.y + TAG_ABOVE, h.z);
     a.model.updateMatrixWorld(true);
     _pInv.copy(a.model.matrixWorld).invert();
     a.flippers.forEach(f => {
@@ -2317,6 +2483,7 @@
     a.hl.position.copy(l); a.hr.position.copy(r);
     a.hl.rotation.y = a.hr.rotation.y = yaw;
     a.label.position.set(h.x, h.y + 0.42, h.z);
+    if (a.tagSprite) a.tagSprite.position.set(h.x, h.y + TAG_ABOVE, h.z);
     [[l, -1], [r, 1]].forEach(([hand, s], i) => {
       _sh.set(s * 0.29 * a.torso.scale.x, 0.2 * a.torso.scale.x, 0.02).applyAxisAngle(UP, yaw).add(a.torso.position);
       _dir.subVectors(hand, _sh);
@@ -2393,7 +2560,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v20';
+  const GAME_VERSION = 'v21';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2529,7 +2696,7 @@
     myName = saved;
     const ni = document.getElementById('nameInput'); if (ni) ni.value = saved;
   })();
-  const CLEAR = { lm: null, hm: null, w: null, u: null, h: null, l: null, r: null, y: null, it: null, im: null, n: null, c: null, s: null };
+  const CLEAR = { t: null, lm: null, hm: null, w: null, u: null, h: null, l: null, r: null, y: null, it: null, im: null, n: null, c: null, s: null };
   const others = new Map();
   const num = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v)) ? Math.min(hi, Math.max(lo, v)) : null;
   const vec = a => {
@@ -2561,6 +2728,8 @@
     o.tH.copy(h); o.tL.copy(l); o.tR.copy(r);
     o.yaw = num(pr.y, -10, 10) || 0;
     o.uid = (typeof pr.u === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(pr.u)) ? pr.u : null;
+    // tag only if that player is allowed it (OWNER = the owner's uid, ADMIN = owner/admin uid)
+    setAvatarTag(o, typeof pr.t === 'string' && tagAllowed(pr.t, o.uid) ? pr.t : '');
     if (!!pr.it !== o.it) setAvatarIt(o, !!pr.it);
     o.imm = !!pr.im;
     o.ready = true;
@@ -2988,6 +3157,7 @@
         mirrorAv.wearKey = null;
       }
       applyCosmetics(mirrorAv, shop.wearing, lolliInMouth());
+      setAvatarTag(mirrorAv, myTagNow());
       mirrorAv.root.traverse(o => o.layers.set(5));
       if (mirrorAv.it !== myIt) setAvatarIt(mirrorAv, myIt);
       mirrorAv.root.visible = true;
@@ -3009,6 +3179,7 @@
     vrPressTick(dt);
     updateKeyboard(dt, pressPts);
     if (pressPts) updateVRButtons(pressPts);
+    refreshBadgeBoard();
     drawPlayerList();
     if (kbBlink !== lastBlink && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 6) { lastBlink = kbBlink; drawMonitor(); }
     nearComputer = !inVR && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 2.2;
@@ -3097,7 +3268,7 @@
         room.presence({
           h: r(headW), l: r(handPos[0]), r: r(handPos[1]),
           y: Math.round(Math.atan2(-tmp.x, -tmp.z) * 100) / 100,
-          it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0
+          it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0, t: myTagNow()
         }).catch(() => {});
       }
     }
@@ -3151,6 +3322,8 @@
       kbRay.setFromCamera(new THREE.Vector2(0, 0), camera);
       const bb2 = banPlane && kbRay.intersectObject(banPlane, false)[0];
       if (bb2 && bb2.distance < 5 && bb2.uv) { banBoardClick(bb2.uv); return; }
+      const bgb = kbRay.intersectObjects(badgeButtons.map(b => b.mesh), true)[0];
+      if (bgb && bgb.distance < 4) { const b = badgeButtons.find(b => b.mesh === bgb.object || b.mesh === bgb.object.parent); if (b) { pressBadge(b); return; } }
       const ab = kbRay.intersectObjects(adminButtons.map(b => b.mesh), false)[0];
       if (ab && ab.distance < 4) { pressAdminButton(adminButtons.find(b => b.mesh === ab.object)); return; }
       const wb = kbRay.intersectObjects(wardrobeButtons.map(b => b.mesh), true)[0];
