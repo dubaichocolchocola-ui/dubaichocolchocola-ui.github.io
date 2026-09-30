@@ -453,6 +453,14 @@
   mirrorCam.layers.enable(5); mirrorCam.layers.disable(4);
   const _mN = V3(), _mP = V3(), _cP = V3(), _mV = V3(), _mT = V3(), _mLook = V3(), _mRot = new THREE.Matrix4();
   const _mPlane = new THREE.Plane(), _mClip = new THREE.Vector4(), _mQ = new THREE.Vector4();
+  // mean brightness (0..1) of the middle of the mirror's last picture; window.__mirrorProbe reads it live (e.g. in VR)
+  const _mPix = new Uint8Array(64 * 64 * 4);
+  function mirrorBrightness() {
+    renderer.readRenderTargetPixels(mirrorRT, 224, 288, 64, 64, _mPix);
+    let s = 0; for (let i = 0; i < _mPix.length; i += 4) s += _mPix[i] + _mPix[i + 1] + _mPix[i + 2];
+    return s / (64 * 64 * 3 * 255);
+  }
+  window.__mirrorProbe = () => ({ brightness: mirrorBrightness(), inShopArea, inVR: renderer.xr.isPresenting, mirrorCopy: !!(mirrorAv && mirrorAv.root.visible) });
   function renderMirror(cam) {
     mirror.updateMatrixWorld(); cam.updateMatrixWorld();
     _mP.setFromMatrixPosition(mirror.matrixWorld);
@@ -470,7 +478,8 @@
     mirrorCam.lookAt(_mT);
     mirrorCam.far = cam.far;
     mirrorCam.updateMatrixWorld();
-    mirrorCam.projectionMatrix.copy(cam.projectionMatrix);
+    // in VR our camera doesn't get the headset's projection in three r149: take it from the XR camera
+    mirrorCam.projectionMatrix.copy(renderer.xr.isPresenting ? renderer.xr.getCamera().projectionMatrix : cam.projectionMatrix);
     mirrorTexMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
     mirrorTexMatrix.multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse).multiply(mirror.matrixWorld);
     _mPlane.setFromNormalAndCoplanarPoint(_mN, _mP).applyMatrix4(mirrorCam.matrixWorldInverse);
@@ -483,7 +492,11 @@
     pm[2] = _mClip.x; pm[6] = _mClip.y; pm[10] = _mClip.z + 1; pm[14] = _mClip.w;
     mirror.visible = false;
     const old = renderer.getRenderTarget();
+    // with XR on, renderer.render would draw the headset views instead of mirrorCam into our target
+    const xrOn = renderer.xr.enabled;
+    renderer.xr.enabled = false;
     renderer.setRenderTarget(mirrorRT); renderer.clear(); renderer.render(scene, mirrorCam);
+    renderer.xr.enabled = xrOn;
     renderer.setRenderTarget(old);
     mirror.visible = true;
   }
@@ -1660,6 +1673,22 @@
         });
         updateKeyAids(null);
       } else ok('first-person penguin exists for the wing test', false);
+      // shop mirror: render it from a camera standing in front of it and read the pixels back
+      {
+        mirror.updateMatrixWorld();
+        const mp = V3().setFromMatrixPosition(mirror.matrixWorld), mn = V3(0, 0, 1).applyQuaternion(mirror.getWorldQuaternion(new THREE.Quaternion()));
+        const tc = new THREE.PerspectiveCamera(75, 1, 0.03, 400); scene.add(tc);
+        tc.position.copy(mp).addScaledVector(mn, 2).add(V3(0, -0.3, 0)); tc.lookAt(mp); tc.updateMatrixWorld();
+        const oldRT = renderer.getRenderTarget(), xrWas = renderer.xr.enabled;
+        renderMirror(tc);
+        const br = mirrorBrightness();
+        ok('mirror renders a picture (not black)', br > 0.08, 'mean brightness ' + br.toFixed(3));
+        ok('mirror render restores XR flag and render target', renderer.xr.enabled === xrWas && renderer.getRenderTarget() === oldRT);
+        scene.remove(tc);
+        const probeL5 = new THREE.Object3D(); probeL5.layers.set(5); const probeL4 = new THREE.Object3D(); probeL4.layers.set(4);
+        ok('mirror camera sees layer 5 (mirror copy), not layer 4 (first-person body)', probeL5.layers.test(mirrorCam.layers) && !probeL4.layers.test(mirrorCam.layers));
+        if (mirrorAv) { let all5 = true; mirrorAv.root.traverse(o => { if (!o.layers.isEnabled(5)) all5 = false; }); ok('mirror copy of the player is on layer 5', all5); }
+      }
       // aiming aids + press point from the key geometry
       ok('every key has its own material', new Set(kbKeys.map(m => m.material)).size === kbKeys.length);
       {
@@ -2243,7 +2272,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v17';
+  const GAME_VERSION = 'v18';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2831,7 +2860,7 @@
         if (d > 0.3) lolliArmed = true;
       }
     } else lolliMouth = false;
-    if (nearShop) {
+    if (inShopArea) {
       if (!mirrorAv || mirrorAv.color !== myColor) {
         if (mirrorAv) disposeAvatar(mirrorAv);
         mirrorAv = makeAvatar(myColor, '', false, myStyle);
@@ -2862,7 +2891,9 @@
     drawPlayerList();
     if (kbBlink !== lastBlink && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 6) { lastBlink = kbBlink; drawMonitor(); }
     nearComputer = !inVR && Math.hypot(headW.x - COMPUTER.x, headW.z - COMPUTER.z) < 2.2;
-    nearShop = !inVR && insideShop(headW);
+    // inShopArea drives the mirror (also in VR); nearShop is only the computer's on-screen hint
+    inShopArea = insideShop(headW);
+    nearShop = !inVR && inShopArea;
     const up = document.getElementById('usePrompt');
     const showUp = (nearComputer || nearShop) && !termOpen;
     const upText = nearShop ? 'כוון על פריט ולחץ כדי לקנות או ללבוש' : 'כוון למקשים ולחץ כדי להקליד קוד, או לחץ E';
@@ -2979,7 +3010,7 @@
       if (hudPlayers.textContent !== pl) hudPlayers.textContent = pl;
     }
 
-    if (nearShop) renderMirror(camera);
+    if (inShopArea) renderMirror(camera);
     renderer.render(scene, camera);
   });
 
@@ -3043,7 +3074,7 @@
     updateNetText();
     setTimeout(() => $('codeInput').focus(), 30);
   }
-  let nearShop = false, coinT = 0;
+  let nearShop = false, inShopArea = false, coinT = 0;
   function renderShop() {
     $('shopCoins').textContent = shop.coins;
     $('hudCoins').textContent = '🪙 ' + shop.coins;
