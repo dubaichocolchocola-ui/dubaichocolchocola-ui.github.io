@@ -197,10 +197,10 @@
     g.add(inner); return g;
   }
   const SHOP_ITEMS = [
-    { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', dispY: -0.49, build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
+    { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', dispY: -0.44, build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
     { id: 'lollipop', name: 'סוכרייה על מקל', price: 15, icon: '🍭', slot: 'hand', dispY: 0.12,
       build: () => fromCos('lollipop', 0.45, 0.25 * 0.45, inner => { inner.rotation.x = -0.35; }) },
-    { id: 'partyhat', name: 'כובע מסיבה', price: 10, icon: '🥳', dispY: -0.49, build: () => {
+    { id: 'partyhat', name: 'כובע מסיבה', price: 10, icon: '🥳', dispY: -0.39, build: () => {
       const g = new THREE.Group();
       const cv = document.createElement('canvas'); cv.width = 64; cv.height = 64;
       const c = cv.getContext('2d'); for (let i = 0; i < 8; i++) { c.fillStyle = i % 2 ? '#ffd23f' : '#ff4f8b'; c.fillRect(0, i * 8, 64, 8); }
@@ -208,13 +208,13 @@
       cone.position.y = 0.6 + 0.47; cone.rotation.z = 0.12;
       const pom = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffffff }));
       pom.position.set(-0.06, 0.6 + 0.94, 0); g.add(cone, pom); return g; } },
-    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', dispY: -0.08, dispZ: 0.56, build: () => {
+    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', dispY: -0.01, dispZ: 0.56, build: () => {
       const g = new THREE.Group();
       const m = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.4 });
       [-0.245, 0.175].forEach(x => { const l = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.05), m); l.position.set(x, 0.12, -0.8); g.add(l); });
       const br = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.04, 0.04), m); br.position.set(-0.035, 0.18, -0.8); g.add(br);
       return g; } },
-    { id: 'crown', name: 'כתר', price: 50, icon: '👑', dispY: -0.42, build: () => {
+    { id: 'crown', name: 'כתר', price: 50, icon: '👑', dispY: -0.37, build: () => {
       const g = new THREE.Group();
       const m = new THREE.MeshStandardMaterial({ color: 0xffc933, roughness: 0.25, metalness: 0.8 });
       const band = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.2, 16, 1, true), m); band.material.side = THREE.DoubleSide; band.position.y = 0.66; g.add(band);
@@ -1347,11 +1347,20 @@
   // wardrobe console next to its buttons, and a pedestal next to its item. Otherwise the hand's HAND_R sphere plants on
   // them before it reaches the key/button/item (measured: 3.5 cm short on the wardrobe from above, 7.7 cm on the crown).
   const HAND_ZONE_PAD = 0.25, _hz = new THREE.Box3(), _hzSkip = new Set();
+  // around a pedestal's top (from the pedestal itself, not the spinning item, whose box changes with its angle):
+  // the top 30 cm of the pedestal and the space above it, 25 cm around
+  function pedestalZone(d) {
+    if (!d.handZone) {
+      const c = d.pedCol;
+      d.handZone = new THREE.Box3(V3(c.min.x - HAND_ZONE_PAD, c.max.y - 0.3, c.min.z - HAND_ZONE_PAD), V3(c.max.x + HAND_ZONE_PAD, c.max.y + 0.9, c.max.z + HAND_ZONE_PAD));
+    }
+    return d.handZone;
+  }
   function handProbeSkip(p) {
     _hzSkip.clear();
     if (deskCollider && keyboardZone().containsPoint(p)) _hzSkip.add(deskCollider);
-    if (wardCollider && wardrobeButtons.some(b => _hz.setFromObject(b.mesh).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
-    for (const d of shopDisplays) if (d.pedCol && _hz.setFromObject(d.spin).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(d.pedCol);
+    if (wardCollider && wardrobeButtons.some(b => objBox(b.mesh, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
+    for (const d of shopDisplays) if (d.pedCol && pedestalZone(d).containsPoint(p)) _hzSkip.add(d.pedCol);
     return _hzSkip.size ? _hzSkip : null;
   }
   // Live measurement for the wrist panel and window.__kbDebug: the hand closest to any key, its nearest key, the
@@ -1598,11 +1607,13 @@
     }
     return fired;
   }
-  const boxCenter = (o, out) => _pb.setFromObject(o).getCenter(out);
+  // world box of an object, updating its (and its parents') world matrix first so it never uses stale matrices
+  const objBox = (o, box) => { o.updateWorldMatrix(true, false); return box.setFromObject(o); };
+  const boxCenter = (o, out) => objBox(o, _pb).getCenter(out);
   function updateVRButtons(pts) {
     for (const f of vrPressNearest('admin', pts, adminButtons, (b, o) => meshCenter(b.mesh, o), ADMIN_PRESS_R, ADMIN_COOL)) { vrActions.admin(f.item); buzz(f.t.h.pad, 0.3, 30); }
-    for (const f of vrPressBoxes('ward', pts, wardrobeButtons, (b, box) => box.setFromObject(b.mesh))) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
-    for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => box.setFromObject(d.spin))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
+    for (const f of vrPressBoxes('ward', pts, wardrobeButtons, (b, box) => objBox(b.mesh, box))) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
+    for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => objBox(d.spin, box))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
     boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
     if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv));
   }
@@ -1718,15 +1729,25 @@
           return 'missed';
         };
         const wardRes = wardrobeButtons.map(b => {
-          const box = new THREE.Box3().setFromObject(b.mesh).expandByScalar(BOX_PAD), c = box.getCenter(V3());
+          const box = objBox(b.mesh, new THREE.Box3()).expandByScalar(BOX_PAD), c = box.getCenter(V3());
           const lab = b.mesh.children[0], front = V3(0, 0, 1).applyQuaternion(lab.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
           return b.act + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
         });
         ok('wardrobe buttons reachable by the real hand', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
+        const bob0 = shopDisplays.map(d => d.spin.position.y);
+        shopDisplays.forEach(d => { d.spin.position.y = -0.04; }); // lowest point of the ±4 cm bob
         const shopRes = shopDisplays.map(d => {
-          const box = new THREE.Box3().setFromObject(d.spin).expandByScalar(BOX_PAD), c = box.getCenter(V3());
-          const front = V3(SHOP_POS.x - c.x, 0, SHOP_POS.z - c.z).normalize();
-          return d.it.name + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
+          const r0 = d.spin.rotation.y, bad = [];
+          for (let k = 0; k < 8; k++) {
+            d.spin.rotation.y = k / 8 * Math.PI * 2;
+            const box = objBox(d.spin, new THREE.Box3()).expandByScalar(BOX_PAD), c = box.getCenter(V3());
+            const front = V3(SHOP_POS.x - c.x, 0, SHOP_POS.z - c.z).normalize();
+            const s = reach(box, c, front, 0), a = reach(box, c, front, 0.8);
+            if (s !== 'in') bad.push(k * 45 + '°: straight ' + s);
+            if (a !== 'in') bad.push(k * 45 + '°: 45° ' + a);
+          }
+          d.spin.rotation.y = r0; d.spin.updateWorldMatrix(true, true);
+          return d.it.name + ': ' + (bad.length ? 'stopped/missed ' + bad.join('; ') : 'in at all 8 angles, straight and 45°');
         });
         ok('shop items reachable by the real hand', shopRes.every(s => !/stopped|missed/.test(s)), shopRes.join(' | '));
         // every item sits on top of its pedestal and stays over it while it spins (8 angles)
@@ -1734,14 +1755,15 @@
           const r0 = d.spin.rotation.y; let lowest = Infinity, farthest = 0;
           for (let k = 0; k < 8; k++) {
             d.spin.rotation.y = k / 8 * Math.PI * 2; d.spin.updateMatrixWorld(true);
-            const b = new THREE.Box3().setFromObject(d.spin), c = b.getCenter(V3());
+            const b = objBox(d.spin, new THREE.Box3()), c = b.getCenter(V3());
             lowest = Math.min(lowest, b.min.y - d.pedCol.max.y);
             farthest = Math.max(farthest, Math.hypot(c.x - (d.pedCol.min.x + d.pedCol.max.x) / 2, c.z - (d.pedCol.min.z + d.pedCol.max.z) / 2));
           }
           d.spin.rotation.y = r0; d.spin.updateMatrixWorld(true);
           return { name: d.it.name, ok: lowest >= -0.01 && farthest < 0.2, txt: d.it.name + ': ' + (lowest * 100).toFixed(1) + ' cm above top, centre ≤' + (farthest * 100).toFixed(1) + ' cm off' };
         });
-        ok('shop items sit on their pedestals', seat.every(s => s.ok), seat.map(s => s.txt).join(' | '));
+        ok('shop items sit on their pedestals (at the bottom of the bob)', seat.every(s => s.ok), seat.map(s => s.txt).join(' | '));
+        shopDisplays.forEach((d, i) => { d.spin.position.y = bob0[i]; });
       }
       // shop mirror: render it from a camera standing in front of it and read the pixels back
       {
