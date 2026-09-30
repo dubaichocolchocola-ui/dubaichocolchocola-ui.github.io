@@ -4292,6 +4292,9 @@
     ramps: () => ramps.map(r => ({ ax: +r.ax.toFixed(2), ay: +r.ay.toFixed(2), az: +r.az.toFixed(2), ux: +r.ux.toFixed(2), uz: +r.uz.toFixed(2), len: +r.len.toFixed(2), slope: +r.slope.toFixed(3) })),
     place: (x, y, z) => { rig.position.set(x, y, z); vel.set(0, 0, 0); hands.forEach(h => { h.touch = false; }); return true; },
     pos: () => ({ x: +rig.position.x.toFixed(2), y: +rig.position.y.toFixed(2), z: +rig.position.z.toFixed(2), speed: +vel.length().toFixed(2), inVR: renderer.xr.isPresenting, inWater: inPool(rig.position.x, rig.position.z) && rig.position.y < PARK.pool.water - 0.05 }),
+    // where the head (in the play space) and the hands are, and what they touch
+    body: () => ({ headLocal: camera.position.toArray().map(v => +v.toFixed(2)), viewY: +view.position.y.toFixed(2),
+      hands: hands.map(h => ({ side: h.side, touch: h.touch, at: handWorld(h, V3()).sub(rig.position).toArray().map(v => +v.toFixed(2)) })) }),
     probeAt: (x, y, z, r = 0) => { const p = probe(V3(x, y, z), r); return p ? { depth: +p.depth.toFixed(3), ny: +p.normal.y.toFixed(2), ramp: !!p.ramp, n: p.normal.toArray(), u: p.ramp ? [p.ramp.ux, p.ramp.uz] : null } : null; },
     pool: () => PARK.pool, slide: () => PARK.slide, scene: () => scene
   };
