@@ -1346,6 +1346,15 @@
     if (n === 'Cube') deskCollider = c;
   });
   let kbText = '', kbMsg = '', kbMsgColor = '#7ed957', kbMsgTimer = 0, kbBlink = 0, kbMode = 'code';
+  // turning with the right stick (VR): SNAP 45° per push / SMOOTH / OFF, chosen with the TURN key, kept in localStorage
+  const TURN_MODES = ['SNAP', 'SMOOTH', 'OFF'];
+  let turnMode = 'SNAP';
+  try { const t = localStorage.getItem('forestTagTurn'); if (TURN_MODES.includes(t)) turnMode = t; } catch (e) {}
+  function nextTurnMode() {
+    turnMode = TURN_MODES[(TURN_MODES.indexOf(turnMode) + 1) % TURN_MODES.length];
+    try { localStorage.setItem('forestTagTurn', turnMode); } catch (e) {}
+    drawMonitor();
+  }
   // largest font (up to px) that keeps text within maxW pixels
   function fitFont(c, text, px, maxW, family) {
     c.font = '700 ' + px + 'px ' + family;
@@ -1382,6 +1391,7 @@
     c.font = '700 34px Consolas, monospace';
     if (kbMsg) { c.fillStyle = kbMsgColor; fitFont(c, kbMsg, 34, 456, 'Consolas, monospace'); c.fillText(kbMsg, 28, 262); } // a result for a few seconds
     else { c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa'; c.fillText('ROOM: ' + rl, 28, 255); }
+    c.fillStyle = '#9fd4ff'; c.font = '700 24px Consolas, monospace'; c.fillText('TURN: ' + turnMode, 28, 298);
     monTex.needsUpdate = true;
   }
   function kbSay(msg) { toast(msg, 2.5); }
@@ -1424,7 +1434,7 @@
   });
   rows.forEach(r => r.sort((a, b) => a.userData.part.loc[1] - b.userData.part.loc[1]));
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['★', 'NOP'], ['★', 'NOP'], ['DEL', 'DEL']],
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['★', 'NOP'], ['DEL', 'DEL']],
     [...'ABCDEFGH'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
     [...'IJKLMNOPQ'].map(c => [c, c]),
     [...'RSTUVWXYZ'].map(c => [c, c])
@@ -1479,6 +1489,7 @@
     tone(650 + Math.random() * 250, 0.05, 'square', 0.06);
     const v = m.userData.value;
     if (v === 'MID') { showMyId(); return; }
+    if (v === 'MTURN') { nextTurnMode(); return; }
     if (kbMode === 'id' && !/^M(CODE|NAME|COLOR)$/.test(v)) {
       // ID screen: for players the typing keys and ENTER do nothing. The owner types another player's ID + ENTER to
       // make them an admin (or remove it).
@@ -2858,7 +2869,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v32';
+  const GAME_VERSION = 'v33';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3618,6 +3629,62 @@
       hands.forEach(h => buzz(h.pad, 0.5, 60));
     }
   }
+  // ---- Turning (VR, right stick) ----
+  // The XR reference space gets an offset that rotates around the head (so the player doesn't move): for a turn R,
+  // position = head - R*head, orientation = R. Turns add up into one total offset (turnYaw, turnPos) from the
+  // session's own space, so the space isn't nested deeper every frame. Positive angle = turn right.
+  const SNAP_ANGLE = Math.PI / 4, SMOOTH_RATE = 2.2, SNAP_PUSH = 0.7, SNAP_REARM = 0.3, SMOOTH_DEAD = 0.15;
+  let turnBase = null, turnYaw = 0, snapReady = true;
+  const turnPos = V3();
+  renderer.xr.addEventListener('sessionstart', () => { turnBase = renderer.xr.getReferenceSpace(); turnYaw = 0; turnPos.set(0, 0, 0); snapReady = true; });
+  renderer.xr.addEventListener('sessionend', () => { turnBase = null; });
+  // the offset for turning by angle around the head (hx, hz), added to the total so far
+  function turnOffset(angle, hx, hz, yaw, pos) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const px = hx - (c * hx + s * hz), pz = hz - (-s * hx + c * hz);   // head - R*head (R = rotation around Y)
+    const C = Math.cos(yaw), S = Math.sin(yaw);
+    return { yaw: yaw + angle, x: pos.x + C * px + S * pz, z: pos.z - S * px + C * pz };
+  }
+  function applyTurn(angle) {
+    if (!turnBase || typeof XRRigidTransform === 'undefined') return false;
+    let hx = camera.position.x, hz = camera.position.z;   // the head in the current space (last frame)
+    try { const f = renderer.xr.getFrame(), vp = f && f.getViewerPose(renderer.xr.getReferenceSpace()); if (vp) { hx = vp.transform.position.x; hz = vp.transform.position.z; } } catch (e) {}
+    const t = turnOffset(angle, hx, hz, turnYaw, turnPos);
+    turnYaw = t.yaw; turnPos.set(t.x, 0, t.z);
+    renderer.xr.setReferenceSpace(turnBase.getOffsetReferenceSpace(new XRRigidTransform(
+      { x: turnPos.x, y: 0, z: turnPos.z }, { x: 0, y: Math.sin(turnYaw / 2), z: 0, w: Math.cos(turnYaw / 2) })));
+    // let go of walls/floor, so the turn doesn't drag the player
+    hands.forEach(h => { h.touch = false; h.cooldown = 0.1; });
+    return true;
+  }
+  let turnApply = applyTurn; // swapped by the test hook
+  // stick right = turn right
+  function updateTurn(dt) {
+    const rh = hands.find(x => x.side === 'right');
+    const ax = rh && rh.pad && rh.pad.axes;
+    const x = ax ? (ax.length >= 4 ? ax[2] : ax[0]) || 0 : 0;
+    if (turnMode === 'SNAP') {
+      if (Math.abs(x) < SNAP_REARM) snapReady = true;
+      else if (snapReady && Math.abs(x) > SNAP_PUSH) { snapReady = false; if (turnApply(Math.sign(x) * SNAP_ANGLE)) tone(420, 0.04, 'triangle', 0.04); }
+    } else if (turnMode === 'SMOOTH') {
+      if (Math.abs(x) > SMOOTH_DEAD) turnApply(SMOOTH_RATE * x * dt);
+    }
+  }
+  window.__turnTest = {
+    mode: () => turnMode, next: nextTurnMode, offset: turnOffset,
+    pressTurnKey: () => { const k = kbKeys.find(m => m.userData.value === 'MTURN'); if (!k) return null; k.userData.cool = 0; pressKey(k); return turnMode; },
+    monitorPng: () => monCv.toDataURL(),
+    // a real turn (VR only): returns what the hands did
+    turn: a => { hands.forEach(h => { h.touch = true; }); const r = applyTurn(a); return { turned: r, touch: hands.map(h => h.touch) }; },
+    state: () => ({ yaw: turnYaw, x: turnPos.x, z: turnPos.z, base: !!turnBase }),
+    // run the stick logic with a fake right stick; returns the turn angles it asked for
+    stick: (x, dt = 1 / 72) => {
+      const rh = hands.find(q => q.side === 'right') || hands[1], sp = rh.side, pp = rh.pad, calls = [];
+      rh.side = 'right'; rh.pad = { axes: [0, 0, x, 0] }; turnApply = a => { calls.push(a); return true; };
+      try { updateTurn(dt); } finally { rh.side = sp; rh.pad = pp; turnApply = applyTurn; }
+      return calls;
+    }
+  };
   window.__heightCalib = { get: () => ({ offset: view.position.y, rawHead: camera.position.y, gameHead: camera.position.y + view.position.y, measured: calibMax, calibrating: calibT >= 0 }), start: startCalibration };
 
   renderer.setAnimationLoop(() => {
@@ -3632,6 +3699,7 @@
       xc.layers.enable(4);
       xc.cameras.forEach(c => c.layers.enable(4));
       updateCalibration(dt);
+      updateTurn(dt);
     } else if (view.position.y !== 0) view.position.y = 0; // height offset is VR-only
 
     if (!active) {
