@@ -1723,7 +1723,7 @@
   // a line on the computer screen, in place of the ROOM line, for a few seconds
   function monSay(text, color, secs = 5) { kbMsg = text; kbMsgColor = color; kbMsgTimer = secs; drawMonitor(); }
 
-  // ---- Keys: the player's own keys + a number row ----
+  // ---- Keys: a full keyboard (5 rows) built on the model's keyboard ----
   const kbKeys = [];
   function labelTex(text, color) {
     const cv = document.createElement('canvas'); cv.width = cv.height = 64;
@@ -1758,25 +1758,45 @@
     rows[r].push(m);
   });
   rows.forEach(r => r.sort((a, b) => a.userData.part.loc[1] - b.userData.part.loc[1]));
+  // The model's own keys are hidden; new keys (copies of a letter key, 0.84 size) fill the same area:
+  // 5 rows between the model's first and fourth row, up to 10 keys per row, centered
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['★', 'NOP'], ['DEL', 'DEL']],
-    // letters in the same order as a real keyboard (QWERTY). This keyboard has 9 keys per row,
-    // so O and P sit at the end of the bottom row, and ENTER stays on its green key.
-    [...'QWERTYUI'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
-    [...'ASDFGHJKL'].map(c => [c, c]),
-    [...'ZXCVBNMOP'].map(c => [c, c])
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['TIME', 'MTIME']],
+    [...'1234567890'].map(c => [c, c]),
+    [...'QWERTYUIOP'].map(c => [c, c]),
+    [...'ASDFGHJKL'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
+    [...'ZXCVBNM'].map(c => [c, c]).concat([['SPC', 'SPC'], ['CLR', 'CLR'], ['DEL', 'DEL']])
   ];
-  rows.forEach((r, ri) => r.forEach((m, i) => { const L = LAYOUT[ri][i]; if (L) makeKey(m, L[0], L[1]); }));
-  // TIME key: a copy of DEL in blue, after DEL, as far from DEL as DEL is from the key before it
+  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MTURN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
+  const KEY_S = 0.84;
   {
-    const del = rows[0][8], prev = rows[0][7];
-    if (del && prev) {
-      const m = new THREE.Mesh(del.geometry, del.material.clone()); m.material.color.setHex(0x3a5fb0);
-      m.position.copy(del.position).multiplyScalar(2).sub(prev.position);
-      m.rotation.copy(del.rotation); m.scale.copy(del.scale); m.userData.part = del.userData.part;
-      del.parent.add(m);
-      makeKey(m, 'TIME', 'MTIME');
-    }
+    // each model key's center (pcGroup space) and the key area
+    const center = m => { m.geometry.computeBoundingBox(); return m.geometry.boundingBox.getCenter(new THREE.Vector3()).add(m.position); };
+    const rowMid = r => r.reduce((a, m) => a.add(center(m)), new THREE.Vector3()).divideScalar(r.length);
+    const first = rows[0], last = rows[3];
+    const r0 = rowMid(first), r3 = rowMid(last);
+    const along = center(first[first.length - 1]).sub(center(first[0]));
+    const span = along.length(), pitchOld = span / (first.length - 1);
+    along.normalize();
+    const pitch = (span + pitchOld) / 10;                     // 10 keys over the width 9 model keys took
+    const tmpl = rows[1][0];                                  // a letter key to copy
+    tmpl.geometry.computeBoundingBox();
+    const gc = tmpl.geometry.boundingBox.getCenter(new THREE.Vector3());
+    const baseY = tmpl.geometry.boundingBox.min.y + tmpl.position.y;
+    LAYOUT.forEach((row, ri) => {
+      const mid = r0.clone().lerp(r3, ri / (LAYOUT.length - 1));
+      row.forEach(([label, value], k) => {
+        const m = new THREE.Mesh(tmpl.geometry, tmpl.material.clone());
+        if (KEY_COLOR[value] !== undefined) m.material.color.setHex(KEY_COLOR[value]);
+        m.scale.setScalar(KEY_S);
+        const c = mid.clone().addScaledVector(along, (k - (row.length - 1) / 2) * pitch);
+        m.position.set(c.x - gc.x * KEY_S, baseY - tmpl.geometry.boundingBox.min.y * KEY_S, c.z - gc.z * KEY_S);
+        m.userData.part = tmpl.userData.part;
+        pcGroup.add(m);
+        makeKey(m, label, value);
+      });
+    });
+    keyParts.forEach(m => { m.visible = false; });
   }
   // Colors for color mode: every letter key becomes a color
   const KEY_COLORS = ['#e53935', '#ff7043', '#ff9800', '#ffc107', '#ffeb3b', '#cddc39', '#8bc34a', '#43a047',
@@ -1794,16 +1814,6 @@
   kbKeys.forEach(m => {
     if (/^[A-Z]$/.test(m.userData.value)) { m.userData.colorHex = KEY_COLORS[colorIdx % KEY_COLORS.length]; m.userData.colorTex = swatchTex(m.userData.colorHex); colorIdx++; }
   });
-  // Number row in front of the keyboard (same style as the player's keys)
-  const digitMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.5 });
-  const digitGeo = new THREE.BoxGeometry(0.08, 0.07, 0.085);
-  [...'1234567890'].forEach((d, i) => {
-    const m = new THREE.Mesh(digitGeo, digitMat);
-    m.position.set(-0.095, 0.251, -0.5 + i * 0.1156);
-    pcGroup.add(m);
-    makeKey(m, d, d);
-  });
-
   function applyKeyLabels() {
     for (const m of kbKeys) {
       const u = m.userData;
@@ -3493,7 +3503,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v36';
+  const GAME_VERSION = 'v37';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4294,6 +4304,14 @@
       if (Math.abs(x) > SMOOTH_DEAD) turnApply(SMOOTH_RATE * x * dt);
     }
   }
+  // keyboard test hook: every key, where its press point is (world), and which key a press at a point would hit
+  window.__kbTest = {
+    keys: () => kbKeys.map(m => ({ v: m.userData.value, p: kbTouchPoint(m, V3()).toArray(), color: m.material.color.getHex(), visible: m.visible })),
+    oldVisible: () => keyParts.filter(m => m.visible).length,
+    nearest: (x, y, z) => { let best = null, bd = KB_PRESS_R; const p = V3(x, y, z); for (const m of kbKeys) { const d = p.distanceTo(kbTouchPoint(m, V3())); if (d < bd) { bd = d; best = m; } } return best ? best.userData.value : null; },
+    press: v => { const m = kbKeys.find(k => k.userData.value === v); if (!m) return null; m.userData.cool = 0; pressKey(m); return { mode: kbMode, text: kbText }; },
+    pitch: () => { const a = kbTouchPoint(kbKeys.find(k => k.userData.value === 'Q'), V3()), b = kbTouchPoint(kbKeys.find(k => k.userData.value === 'W'), V3()), c = kbTouchPoint(kbKeys.find(k => k.userData.value === 'A'), V3()); return { along: a.distanceTo(b), across: a.distanceTo(c) }; }
+  };
   // clothes test hooks
   window.__clothesTest = {
     items: () => SHOP_ITEMS.map(i => i.id), shopIds: () => shopDisplays.map(d => d.it.id),
@@ -4391,8 +4409,7 @@
   window.__timeTest = { mode: () => timeMode, p: () => timeP, press: () => { const k = kbKeys.find(m => m.userData.value === 'MTIME'); if (!k) return null; k.userData.cool = 0; pressKey(k); return timeMode; },
     set: m => { timeMode = m; drawMonitor(); return m; }, jump: p => { timeP = p; applyTime(p); return true; },
     look: () => ({ sunI: sun.intensity, hemiI: hemi.intensity, hemiSky: hemi.color.getHexString(), fog: scene.fog.color.getHexString(), stars: stars.visible ? +stars.material.opacity.toFixed(2) : 0, moon: moon.visible, sunDisc: sunDisc.visible }),
-    key: () => { const k = kbKeys.find(m => m.userData.value === 'MTIME'), d = kbKeys.find(m => m.userData.value === 'DEL'), s = kbKeys.find(m => m.userData.value === 'NOP');
-      return k ? { time: k.position.toArray(), del: d.position.toArray(), prev: s.position.toArray() } : null; } };
+    key: () => { const k = kbKeys.find(m => m.userData.value === 'MTIME'); return k ? { time: k.position.toArray() } : null; } };
 
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.033);
