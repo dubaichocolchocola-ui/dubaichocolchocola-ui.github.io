@@ -267,6 +267,7 @@
 
   // ================= World =================
   const colliders = [];
+  const ramps = []; // sloped surfaces (the slide): {x0,x1,z,w,y0,y1,n}
   const SHOW_TREES = false, SHOW_PLANTS = false, SHOW_ROCKS = false, SHOW_FENCE = false, SHOW_FAR_TREES = false;
   // Seeded random: every player sees exactly the same forest
   const srnd = (() => { let a = 20260929; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; })();
@@ -1212,7 +1213,7 @@
       v.push(-cx, 0, -cz, cx, 0, cz, lean, 0.36, lean * 0.5);
     }
     blade.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); blade.computeVertexNormals(); }
-  const freeSpot = (x, z) => distToPath(x, z) > 1.3 && Math.hypot(x - POND.x, z - POND.z) > POND_R + 0.9 && !(Math.abs(x + 4.5) < 2.5 && Math.abs(z - 3) < 1.5) && Math.hypot(x, z) > 1.2;
+  const freeSpot = (x, z) => distToPath(x, z) > 1.3 && Math.hypot(x - POND.x, z - POND.z) > POND_R + 0.9 && !(Math.abs(x + 4.5) < 2.5 && Math.abs(z - 3) < 1.5) && Math.hypot(x, z) > 1.2 && !(x > -0.8 && x < 16.9 && z > -21.2 && z < -12.8); // no grass on the water park
   const grassN = SHOW_PLANTS ? 1600 : 0;
   const grass = new THREE.InstancedMesh(blade, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, side: THREE.DoubleSide }), grassN);
   { const mm = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = V3(), ps = V3(), col = new THREE.Color(); let k = 0;
@@ -2391,6 +2392,276 @@
     return results;
   };
 
+  // ================= Water park: slide + pool =================
+  const PARK = {
+    slide: { x0: 4.6, x1: 9.95, z: -17, w: 1.4, y0: 3.2, y1: 1.15 },
+    pool: { x0: 9.5, x1: 15.0, z0: -19.4, z1: -14.6, h: 1.0, water: 0.82, t: 0.25 }
+  };
+  {
+    const S = PARK.slide, P = PARK.pool;
+    const solid = (x, y, z, sx, sy, sz, mat, collide = true) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+      m.position.set(x, y, z); scene.add(m);
+      if (collide) colliders.push({ min: V3(x - sx / 2, y - sy / 2, z - sz / 2), max: V3(x + sx / 2, y + sy / 2, z + sz / 2) });
+      return m;
+    };
+    const slideMat = new THREE.MeshStandardMaterial({ color: 0xff8a2a, roughness: 0.35, metalness: 0.05 });
+    const railMat = new THREE.MeshStandardMaterial({ color: 0xffd23a, roughness: 0.4 });
+    const towerMat = new THREE.MeshStandardMaterial({ color: 0xb9c2cc, roughness: 0.35, metalness: 0.55 });   // galvanized steel
+    const gratingTex = (() => { // steel grating for the steps and platform
+      const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+      x.fillStyle = '#7d8791'; x.fillRect(0, 0, 64, 64); x.strokeStyle = '#5b646d'; x.lineWidth = 3;
+      for (let i = 0; i <= 64; i += 8) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 64); x.stroke(); }
+      x.strokeStyle = '#9aa4ae'; x.lineWidth = 1; for (let i = 4; i <= 64; i += 16) { x.beginPath(); x.moveTo(0, i); x.lineTo(64, i); x.stroke(); }
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 3); return t;
+    })();
+    const stepMat = new THREE.MeshStandardMaterial({ color: 0xffffff, map: gratingTex, roughness: 0.55, metalness: 0.45 });
+    const tileTex = (() => { // small pool tiles with white grout
+      const c = document.createElement('canvas'); c.width = c.height = 256; const x = c.getContext('2d');
+      for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) {
+        const l = 62 + Math.random() * 8; x.fillStyle = `hsl(195, 70%, ${l}%)`; x.fillRect(i * 32, j * 32, 32, 32);
+      }
+      x.strokeStyle = '#eef6f8'; x.lineWidth = 3;
+      for (let i = 0; i <= 256; i += 32) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 256); x.stroke(); x.beginPath(); x.moveTo(0, i); x.lineTo(256, i); x.stroke(); }
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+    })();
+    const tiled = (rx, ry) => { const t = tileTex.clone(); t.needsUpdate = true; t.repeat.set(rx, ry); return new THREE.MeshStandardMaterial({ color: 0xffffff, map: t, roughness: 0.3 }); };
+    const tileMat = new THREE.MeshStandardMaterial({ color: 0xf4f1ea, roughness: 0.6 });                      // outside of the pool walls
+    const trimMatP = new THREE.MeshStandardMaterial({ color: 0xe6dccb, roughness: 0.85 });                   // stone coping on top
+
+    // --- tower: platform, legs, stairs ---
+    const PX0 = 3.4, PX1 = S.x0;
+    solid((PX0 + PX1) / 2, S.y0 - 0.06, S.z, PX1 - PX0, 0.12, 1.3, towerMat);
+    [[PX0 + 0.08, S.z - 0.58], [PX0 + 0.08, S.z + 0.58], [PX1 - 0.08, S.z - 0.58], [PX1 - 0.08, S.z + 0.58]].forEach(([x, z]) => {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, S.y0, 8), towerMat); leg.position.set(x, S.y0 / 2, z); scene.add(leg);
+    });
+    // little safety rails on the platform sides
+    solid((PX0 + PX1) / 2, S.y0 + 0.45, S.z - 0.64, PX1 - PX0, 0.08, 0.06, railMat);
+    solid((PX0 + PX1) / 2, S.y0 + 0.45, S.z + 0.64, PX1 - PX0, 0.08, 0.06, railMat);
+    for (let i = 1; i <= 9; i++) { // stairs down to the ground (toward -x)
+      const top = S.y0 - 0.32 * i, x = PX0 - 0.4 * i + 0.2;
+      solid(x, top / 2, S.z, 0.4, top, 1.0, stepMat);
+    }
+
+    const tubeMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uSun: { value: new THREE.Vector3(90, 110, 60).normalize() } },
+      vertexShader: `varying vec3 vW; varying vec3 vN; void main(){ vec4 w = modelMatrix*vec4(position,1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix)*normal); gl_Position = projectionMatrix*viewMatrix*w; }`,
+      fragmentShader: `uniform vec3 uSun; varying vec3 vW; varying vec3 vN;
+        void main(){ vec3 V = normalize(cameraPosition - vW); vec3 N = normalize(vN); if (dot(N, V) < 0.0) N = -N;
+          float fr = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 2.5);
+          float sp = pow(max(dot(reflect(-uSun, N), V), 0.0), 90.0) * 1.6;
+          vec3 tint = vec3(0.55, 0.85, 1.0);
+          gl_FragColor = vec4(tint * (0.7 + 0.3 * max(dot(N, uSun), 0.0)) + sp, 0.1 + 0.55 * fr + sp); }`
+    });
+    // --- the slide: a curvy, see-through tube (like a real water-park tube slide) ---
+    // floor path of the slide, from the tower top, swinging out and back, into the pool
+    const floorCurve = new THREE.CatmullRomCurve3([
+      V3(S.x0, S.y0, S.z), V3(5.8, 2.97, -17.8), V3(7.2, 2.62, -18.7), V3(8.3, 2.22, -17.7),
+      V3(8.1, 1.88, -16.0), V3(8.9, 1.56, -15.3), V3(10.4, 1.3, -15.9)
+    ], false, 'centripetal');
+    const NSEG = 48, pts = floorCurve.getSpacedPoints(NSEG);
+    const TR = 0.85, lift = Math.sqrt(TR * TR - (S.w / 2) * (S.w / 2));
+    const up = V3(0, 1, 0);
+    // walking/sliding surface: one short sloped strip per segment, with side walls (the tube)
+    for (let i = 0; i < NSEG; i++) {
+      const A = pts[i], B = pts[i + 1];
+      const hx = B.x - A.x, hz = B.z - A.z, len = Math.hypot(hx, hz);
+      const ux = hx / len, uz = hz / len, slope = (B.y - A.y) / len;
+      ramps.push({ ax: A.x, ay: A.y, az: A.z, ux, uz, sx: -uz, sz: ux, len, slope, w: S.w, ny: 1 / Math.hypot(1, slope), n: new THREE.Vector3(-slope * ux, 1, -slope * uz).normalize() });
+    }
+    // tube (center line = floor + lift)
+    const centerCurve = new THREE.CatmullRomCurve3(pts.map(p => p.clone().add(V3(0, lift, 0))), false, 'centripetal');
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(centerCurve, 160, TR, 36, false), tubeMat);
+    tube.userData.noShadow = true; scene.add(tube);
+    // slide floor + a thin layer of running water on it
+    const ribbon = (h, halfW) => {
+      const pos = [], uv = [], idx = [];
+      for (let i = 0; i <= NSEG; i++) {
+        const t = floorCurve.getTangentAt(i / NSEG); const side = V3(-t.z, 0, t.x).normalize();
+        const c = pts[i];
+        pos.push(c.x - side.x * halfW, c.y + h, c.z - side.z * halfW, c.x + side.x * halfW, c.y + h, c.z + side.z * halfW);
+        uv.push(0, i / NSEG * 12, 1, i / NSEG * 12);
+        if (i < NSEG) { const k = i * 2; idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3); }
+      }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
+      return g;
+    };
+    const slideFloor = new THREE.Mesh(ribbon(-0.01, S.w / 2), new THREE.MeshStandardMaterial({ color: 0xff8a2a, roughness: 0.18, metalness: 0.05, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthWrite: false }));
+    slideFloor.userData.noShadow = true; scene.add(slideFloor);
+    PARK.flowU = { uTime: { value: 0 } };
+    const flow = new THREE.Mesh(ribbon(0.012, S.w / 2 - 0.05), new THREE.ShaderMaterial({
+      uniforms: PARK.flowU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `uniform float uTime; varying vec2 vUv;
+        void main(){ float v = vUv.y * 3.0 - uTime * 2.6; float x = vUv.x;
+          float s = 0.5 + 0.5 * sin(v * 6.0 + sin(x * 9.0 + v) * 1.5);
+          float edge = smoothstep(0.0, 0.18, x) * smoothstep(1.0, 0.82, x);
+          float a = (0.18 + 0.32 * pow(s, 6.0)) * edge;
+          gl_FragColor = vec4(mix(vec3(0.55, 0.85, 1.0), vec3(1.0), pow(s, 6.0)), a); }`
+    }));
+    flow.userData.noShadow = true; flow.userData.dyn = true; scene.add(flow);
+    // bolted flanges where tube pieces join, and steel posts holding it up
+    const flangeGeo = new THREE.TorusGeometry(TR + 0.03, 0.05, 8, 36);
+    for (let k = 0; k <= 8; k++) {
+      const t = k / 8, c = centerCurve.getPointAt(t), tan = centerCurve.getTangentAt(t);
+      const f = new THREE.Mesh(flangeGeo, slideMat); f.position.copy(c); f.quaternion.setFromUnitVectors(V3(0, 0, 1), tan); scene.add(f);
+      if (k > 0 && k < 8) {
+        const bottom = c.y - TR - 0.02;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, bottom, 10), towerMat); post.position.set(c.x, bottom / 2, c.z); scene.add(post);
+        const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.12), towerMat); saddle.position.set(c.x, bottom, c.z); saddle.rotation.y = Math.atan2(-tan.z, tan.x); scene.add(saddle);
+      }
+    }
+
+    // --- the pool: tiled walls, floor, water ---
+    const cx = (P.x0 + P.x1) / 2, cz = (P.z0 + P.z1) / 2, W = P.x1 - P.x0, D = P.z1 - P.z0;
+    solid(P.x0 + P.t / 2, P.h / 2, cz, P.t, P.h, D, tileMat);
+    solid(P.x1 - P.t / 2, P.h / 2, cz, P.t, P.h, D, tileMat);
+    solid(cx, P.h / 2, P.z0 + P.t / 2, W, P.h, P.t, tileMat);
+    solid(cx, P.h / 2, P.z1 - P.t / 2, W, P.h, P.t, tileMat);
+    const inW = W - 2 * P.t, inD = D - 2 * P.t;
+    [[cx, P.z0 + P.t + 0.005, 0, inW], [cx, P.z1 - P.t - 0.005, Math.PI, inW], [P.x0 + P.t + 0.005, cz, Math.PI / 2, inD], [P.x1 - P.t - 0.005, cz, -Math.PI / 2, inD]].forEach(([x, z, ry, len]) => {
+      const panel = new THREE.Mesh(new THREE.PlaneGeometry(len, P.h), tiled(len * 2, P.h * 2));
+      panel.position.set(x, P.h / 2, z); panel.rotation.y = ry; scene.add(panel);
+    });
+    // pool deck: light paving stones all around the pool
+    const paveTex = (() => {
+      const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { const l = 80 + Math.random() * 6; x.fillStyle = `hsl(38, 18%, ${l}%)`; x.fillRect(i * 32, j * 32, 32, 32); }
+      x.strokeStyle = '#b9ad98'; x.lineWidth = 2; for (let i = 0; i <= 128; i += 32) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 128); x.stroke(); x.beginPath(); x.moveTo(0, i); x.lineTo(128, i); x.stroke(); }
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+    })();
+    const DECK = 1.6;
+    [[cx, P.z0 - DECK / 2, W + 2 * DECK, DECK], [cx, P.z1 + DECK / 2, W + 2 * DECK, DECK], [P.x0 - DECK / 2, cz, DECK, D], [P.x1 + DECK / 2, cz, DECK, D]].forEach(([x, z, sx, sz]) => {
+      const t = paveTex.clone(); t.needsUpdate = true; t.repeat.set(sx, sz);
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(sx, sz), new THREE.MeshStandardMaterial({ color: 0xffffff, map: t, roughness: 0.9 }));
+      m.rotation.x = -Math.PI / 2; m.position.set(x, 0.015, z); scene.add(m);
+    });
+    // two sun loungers and a parasol on the far side
+    const loungerMat = new THREE.MeshStandardMaterial({ color: 0xf5f5f0, roughness: 0.6 });
+    const cushionMat = new THREE.MeshStandardMaterial({ color: 0x2d8fd5, roughness: 0.9 });
+    [-18.3, -16.9].forEach(z => {
+      const x = P.x1 + DECK / 2 + 0.05;
+      solid(x, 0.2, z, 0.62, 0.08, 1.7, loungerMat);
+      const cush = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.06, 1.2), cushionMat); cush.position.set(x, 0.27, z + 0.2); scene.add(cush);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.06, 0.6), cushionMat); back.position.set(x, 0.45, z - 0.72); back.rotation.x = 0.7; scene.add(back);
+      [[-0.26, -0.75], [0.26, -0.75], [-0.26, 0.75], [0.26, 0.75]].forEach(([ox, oz]) => { const l = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.05), loungerMat); l.position.set(x + ox, 0.09, z + oz); scene.add(l); });
+    });
+    { const x = P.x1 + DECK / 2 + 0.05, z = -15.4;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.3, 8), loungerMat); pole.position.set(x, 1.15, z); scene.add(pole);
+      const shadeCv = document.createElement('canvas'); shadeCv.width = 256; shadeCv.height = 8; const sx = shadeCv.getContext('2d');
+      for (let i = 0; i < 8; i++) { sx.fillStyle = i % 2 ? '#ffffff' : '#e8553a'; sx.fillRect(i * 32, 0, 32, 8); }
+      const para = new THREE.Mesh(new THREE.ConeGeometry(1.3, 0.45, 16, 1, true), new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(shadeCv), side: THREE.DoubleSide, roughness: 0.8 }));
+      para.position.set(x, 2.35, z); scene.add(para); }
+    // pool ladder: two steel handrails that curve over the far wall
+    const railSteel = new THREE.MeshStandardMaterial({ color: 0xdfe5ea, roughness: 0.2, metalness: 0.7 });
+    [-0.28, 0.28].forEach(off => {
+      const x = P.x1 - P.t, z = cz + off;
+      const curve = new THREE.CatmullRomCurve3([V3(x + 0.35, 0, z), V3(x + 0.35, P.h + 0.45, z), V3(x + 0.05, P.h + 0.62, z), V3(x - 0.2, P.h + 0.3, z), V3(x - 0.12, 0.25, z)]);
+      const r = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.028, 8, false), railSteel); scene.add(r);
+    });
+    for (let k = 0; k < 3; k++) { const st = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.56), railSteel); st.position.set(P.x1 - P.t - 0.15, 0.25 + k * 0.22, cz); scene.add(st); }
+    [[cx, P.z0 + P.t / 2, W + 0.1, P.t + 0.1], [cx, P.z1 - P.t / 2, W + 0.1, P.t + 0.1], [P.x0 + P.t / 2, cz, P.t + 0.1, D + 0.1], [P.x1 - P.t / 2, cz, P.t + 0.1, D + 0.1]].forEach(([x, z, sx, sz]) => {
+      const trim = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.07, sz), trimMatP); trim.position.set(x, P.h + 0.035, z); scene.add(trim);
+    });
+    const poolFloor = new THREE.Mesh(new THREE.PlaneGeometry(inW, inD), tiled(inW * 2, inD * 2));
+    poolFloor.rotation.x = -Math.PI / 2; poolFloor.position.set(cx, 0.025, cz); scene.add(poolFloor);
+    // caustics: the dancing light lines on a pool floor (two layers drifting different ways)
+    const causticTex = (() => {
+      const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+      x.fillStyle = '#000'; x.fillRect(0, 0, 128, 128);
+      const pts = []; for (let i = 0; i < 16; i++) pts.push([Math.random() * 128, Math.random() * 128]);
+      const img = x.getImageData(0, 0, 128, 128);
+      for (let yy = 0; yy < 128; yy++) for (let xx = 0; xx < 128; xx++) {
+        let d1 = 1e9, d2 = 1e9;
+        for (const [px, py] of pts) for (let ox = -128; ox <= 128; ox += 128) for (let oy = -128; oy <= 128; oy += 128) {
+          const d = Math.hypot(xx - px - ox, yy - py - oy); if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+        }
+        const v = Math.max(0, 1 - (d2 - d1) / 4); const k = (yy * 128 + xx) * 4;
+        img.data[k] = img.data[k + 1] = img.data[k + 2] = Math.min(255, v * v * 255); img.data[k + 3] = 255;
+      }
+      x.putImageData(img, 0, 0);
+      const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+    })();
+    PARK.caustics = [0, 1].map(i => {
+      const t = causticTex.clone(); t.needsUpdate = true; t.repeat.set(inW / (1.6 + i * 0.7), inD / (1.6 + i * 0.7));
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(inW, inD), new THREE.MeshBasicMaterial({ map: t, color: i ? 0x6fd6ff : 0xbff0ff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.rotation.x = -Math.PI / 2; m.position.set(cx, 0.03 + i * 0.004, cz); m.userData.noShadow = true; m.userData.dyn = true; scene.add(m);
+      return t;
+    });
+    // the water: waves, see-through when you look straight down, mirror-like at low angles, sun sparkles
+    const waterGeo = new THREE.PlaneGeometry(inW, inD, 44, 36); waterGeo.rotateX(-Math.PI / 2);
+    PARK.waterU = { uTime: { value: 0 }, uSun: { value: new THREE.Vector3(90, 110, 60).normalize() } };
+    const water = new THREE.Mesh(waterGeo, new THREE.ShaderMaterial({
+      uniforms: PARK.waterU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: `uniform float uTime; varying vec3 vW; varying vec3 vN;
+        float h(vec2 p){ return 0.016*sin(p.x*2.3+uTime*1.8)+0.012*sin(p.y*3.1-uTime*1.4)+0.008*sin((p.x+p.y)*5.2+uTime*2.6); }
+        void main(){ vec4 w = modelMatrix*vec4(position,1.0); vec2 p = w.xz; float e = 0.05;
+          w.y += h(p); vN = normalize(vec3(-(h(p+vec2(e,0.))-h(p-vec2(e,0.)))/(2.*e)*6.0, 1.0, -(h(p+vec2(0.,e))-h(p-vec2(0.,e)))/(2.*e)*6.0));
+          vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
+      fragmentShader: `uniform vec3 uSun; varying vec3 vW; varying vec3 vN;
+        void main(){ vec3 N = normalize(vN); vec3 V = normalize(cameraPosition - vW); if (V.y < 0.0) N = -N;
+          float fr = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+          vec3 shallow = vec3(0.16, 0.62, 0.78), sky = vec3(0.72, 0.86, 0.98);
+          vec3 col = mix(shallow, sky, fr * 0.85);
+          vec3 R = reflect(-uSun, N); float sp = pow(max(dot(R, V), 0.0), 180.0) * 2.2;
+          gl_FragColor = vec4(col + sp, mix(0.38, 0.92, fr) + sp); }`
+    }));
+    water.position.set(cx, P.water, cz); water.userData.dyn = true; water.userData.noShadow = true; scene.add(water);
+    PARK.waterMesh = water;
+    // water droplets for splashes
+    PARK.drops = new THREE.InstancedMesh(new THREE.SphereGeometry(0.035, 6, 4), new THREE.MeshStandardMaterial({ color: 0xcfefff, roughness: 0.1, transparent: true, opacity: 0.85 }), 80);
+    PARK.drops.count = 80; PARK.drops.userData.dyn = PARK.drops.userData.noShadow = true; PARK.drops.frustumCulled = false; scene.add(PARK.drops);
+    PARK.dropData = Array.from({ length: 80 }, () => ({ p: new THREE.Vector3(0, -10, 0), v: new THREE.Vector3(), t: 0 }));
+    PARK.dropI = 0;
+    // splash rings
+    PARK.splashes = [];
+    const ringGeo = new THREE.RingGeometry(0.25, 0.34, 24); ringGeo.rotateX(-Math.PI / 2);
+    for (let i = 0; i < 6; i++) {
+      const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false }));
+      m.visible = false; m.userData.noShadow = true; m.userData.dyn = true; scene.add(m); PARK.splashes.push({ m, t: 0 });
+    }
+  }
+  function inPool(x, z, pad = 0) { const P = PARK.pool; return x > P.x0 + P.t - pad && x < P.x1 - P.t + pad && z > P.z0 + P.t - pad && z < P.z1 - P.t + pad; }
+  function splash(x, z, big) {
+    const n = big ? 26 : 6;
+    for (let i = 0; i < n; i++) {
+      const d = PARK.dropData[PARK.dropI]; PARK.dropI = (PARK.dropI + 1) % PARK.dropData.length;
+      const a = Math.random() * 6.283, sp = (big ? 1.2 : 0.5) + Math.random() * (big ? 2.2 : 0.8);
+      d.p.set(x, PARK.pool.water + 0.02, z); d.v.set(Math.cos(a) * sp * 0.6, (big ? 2.6 : 1.3) + Math.random() * (big ? 2.4 : 1), Math.sin(a) * sp * 0.6); d.t = 2;
+    }
+    const sp = PARK.splashes.find(s => s.t <= 0) || PARK.splashes[0];
+    sp.t = big ? 1.0 : 0.7; sp.big = big; sp.m.position.set(x, PARK.pool.water + 0.01, z); sp.m.visible = true;
+    tone(big ? 220 : 380, 0.18, 'sine', big ? 0.14 : 0.06, -120);
+  }
+  let parkT = 0, wasInWater = false;
+  function updatePark(dt) {
+    parkT += dt;
+    PARK.waterU.uTime.value = parkT; PARK.flowU.uTime.value = parkT;
+    PARK.caustics[0].offset.set(Math.sin(parkT * 0.21) * 0.3 + parkT * 0.02, Math.cos(parkT * 0.17) * 0.3);
+    PARK.caustics[1].offset.set(-parkT * 0.025 + Math.cos(parkT * 0.13) * 0.2, parkT * 0.018);
+    const mm = PARK._m || (PARK._m = new THREE.Matrix4());
+    let live = false;
+    PARK.dropData.forEach((d, i) => {
+      if (d.t > 0) {
+        d.t -= dt; d.v.y -= 9.8 * dt; d.p.addScaledVector(d.v, dt);
+        if (d.p.y < PARK.pool.water && d.v.y < 0) { d.t = 0; d.p.y = -10; }
+        live = true;
+      }
+      mm.makeTranslation(d.p.x, d.t > 0 ? d.p.y : -10, d.p.z); PARK.drops.setMatrixAt(i, mm);
+    });
+    if (live || PARK._wasLive) PARK.drops.instanceMatrix.needsUpdate = true;
+    PARK._wasLive = live;
+    for (const sp of PARK.splashes) {
+      if (sp.t <= 0) continue;
+      sp.t -= dt;
+      const k = 1 - Math.max(0, sp.t) / (sp.big ? 1.0 : 0.7);
+      const sc = 1 + k * (sp.big ? 5 : 3); sp.m.scale.set(sc, 1, sc);
+      sp.m.material.opacity = 0.7 * (1 - k);
+      if (sp.t <= 0) sp.m.visible = false;
+    }
+  }
+
   // ================= Collision helpers =================
   // skip (optional): colliders to ignore for this probe (used by the hands over the keyboard)
   function probe(p, r, skip = null) {
@@ -2413,6 +2684,21 @@
       if (!best || depth > best.depth) {
         const surface = p.clone(); surface[axis] = plane;
         best = { depth, normal, surface };
+      }
+    }
+    for (const rp of ramps) { // slide segments: sloped floor + the tube's side walls
+      const px = p.x - rp.ax, pz = p.z - rp.az;
+      const a = px * rp.ux + pz * rp.uz; if (a < -0.06 || a > rp.len + 0.06) continue;
+      const b = px * rp.sx + pz * rp.sz; if (Math.abs(b) > rp.w / 2 + 0.35) continue;
+      const hgt = p.y - (rp.ay + rp.slope * a); if (hgt < -0.45 || hgt > 1.45) continue;
+      if (Math.abs(b) <= rp.w / 2) {
+        const d = hgt * rp.ny;
+        if (d < r) { const depth = r - d; if (!best || depth > best.depth) best = { depth, normal: rp.n.clone(), surface: p.clone().addScaledVector(rp.n, -d), ramp: rp }; }
+      }
+      const over = Math.abs(b) - (rp.w / 2 - r);
+      if (over > 0 && hgt > -0.1 && hgt < 1.3 && Math.abs(b) < rp.w / 2 + 0.3) {
+        const sg = Math.sign(b), nrm = V3(-rp.sx * sg, 0, -rp.sz * sg);
+        if (!best || over > best.depth) best = { depth: over, normal: nrm, surface: p.clone().addScaledVector(nrm, over) };
       }
     }
     return best;
@@ -2869,7 +3155,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v33';
+  const GAME_VERSION = 'v34';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3670,6 +3956,14 @@
       if (Math.abs(x) > SMOOTH_DEAD) turnApply(SMOOTH_RATE * x * dt);
     }
   }
+  // water park test hooks: put the player somewhere, read where they are, ask probe about a point
+  window.__parkTest = {
+    ramps: () => ramps.map(r => ({ ax: +r.ax.toFixed(2), ay: +r.ay.toFixed(2), az: +r.az.toFixed(2), ux: +r.ux.toFixed(2), uz: +r.uz.toFixed(2), len: +r.len.toFixed(2), slope: +r.slope.toFixed(3) })),
+    place: (x, y, z) => { rig.position.set(x, y, z); vel.set(0, 0, 0); hands.forEach(h => { h.touch = false; }); return true; },
+    pos: () => ({ x: +rig.position.x.toFixed(2), y: +rig.position.y.toFixed(2), z: +rig.position.z.toFixed(2), speed: +vel.length().toFixed(2), inVR: renderer.xr.isPresenting, inWater: inPool(rig.position.x, rig.position.z) && rig.position.y < PARK.pool.water - 0.05 }),
+    probeAt: (x, y, z, r = 0) => { const p = probe(V3(x, y, z), r); return p ? { depth: +p.depth.toFixed(3), ny: +p.normal.y.toFixed(2), ramp: !!p.ramp } : null; },
+    pool: () => PARK.pool, slide: () => PARK.slide, scene: () => scene
+  };
   window.__turnTest = {
     mode: () => turnMode, next: nextTurnMode, offset: turnOffset,
     pressTurnKey: () => { const k = kbKeys.find(m => m.userData.value === 'MTURN'); if (!k) return null; k.userData.cool = 0; pressKey(k); return turnMode; },
@@ -3696,6 +3990,7 @@
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.033);
     updateDecor(dt);
+    updatePark(dt);
     const inVR = renderer.xr.isPresenting;
     const active = inVR || deskMode;
     voiceFrame(); // voice positions / volumes / speaking signs (runs whenever voice is on)
@@ -3856,6 +4151,27 @@
       rig.position.addScaledVector(hb.normal, hb.depth);
       vel.addScaledVector(hb.normal, -Math.min(0, vel.dot(hb.normal)));
     }
+    // on the slide: no friction, so you slide down
+    const onRamp = !!(feet && feet.ramp);
+    if (onRamp) { onGround = false; vel.x += feet.ramp.ux * 2.5 * dt; vel.z += feet.ramp.uz * 2.5 * dt; }
+    // in the pool: water slows you down and holds you up a bit; hands paddle
+    const inWater = inPool(rig.position.x, rig.position.z) && rig.position.y < PARK.pool.water - 0.05;
+    if (inWater) {
+      if (!wasInWater && vel.length() > 1.2) splash(rig.position.x, rig.position.z, vel.y < -3);
+      const kd = Math.exp(-2.2 * dt); vel.multiplyScalar(kd);
+      vel.y += (inVR ? 7.2 : 10.5) * dt;
+      if (inVR) hands.forEach(h => {
+        if (!h.side) return;
+        const hp = handWorld(h, V3());
+        if (h.waterPrev && inPool(hp.x, hp.z) && hp.y < PARK.pool.water) {
+          const d = hp.clone().sub(h.waterPrev);
+          if (d.length() < 0.2) rig.position.addScaledVector(d.setY(0), -0.45);
+          if (Math.random() < d.length() * 2) splash(hp.x, hp.z, false);
+        }
+        h.waterPrev = hp;
+      });
+    }
+    wasInWater = inWater;
     if (inVR && onGround && !count) { const kk = Math.exp(-7 * dt); vel.x *= kk; vel.z *= kk; }
     onGroundPrev = onGround;
     rig.position.x = Math.max(-SIZE + 0.3, Math.min(SIZE - 0.3, rig.position.x));
