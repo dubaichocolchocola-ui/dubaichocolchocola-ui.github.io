@@ -1264,6 +1264,25 @@
     ctrl.getWorldQuaternion(_hcq); h.quaternion.copy(_hcq).multiply(HAMMER_Q);
     h.updateMatrixWorld(true);
   }
+  // VR: an item held in the hand (slot 'hand') is stuck to the hand like the hammer, no forces: it turns with the
+  // controller of hands[0] (the hand it hangs on, hl) times a grip angle per item (tilted forward around X);
+  // the balloon always stays upright
+  const HAND_GRIP = {
+    wand: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2),
+    lollipop: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 4),
+    icecream: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.2)
+  };
+  const HAND_GRIP_DEFAULT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 3);
+  const _hiW = new THREE.Quaternion(), _hiP = new THREE.Quaternion();
+  function poseHandItem(a) {
+    if (!a || !a.handCos) return;
+    const id = shop.wearing.find(i => ITEM_BY_ID[i] && ITEM_BY_ID[i].slot === 'hand');
+    if (!id) { a.handCos.quaternion.identity(); return; }
+    if (id === 'balloon') _hiW.identity();
+    else _hiW.copy(rig.quaternion).multiply(hands[0].ctrl.quaternion).multiply(HAND_GRIP[id] || HAND_GRIP_DEFAULT);
+    a.hl.getWorldQuaternion(_hiP).invert();   // world -> the hand's own space
+    a.handCos.quaternion.copy(_hiP).multiply(_hiW);
+  }
   function hammerHeadWorld(out) { return myHammer.userData.head.getWorldPosition(out); }
   // one frame of hit detection: the hammer head (world) must touch a player's head or body while swinging fast
   function hammerSwingCheck(dt, head, speed) {
@@ -2073,7 +2092,8 @@
     kbDots.forEach(d => { d.visible = false; });
     if (pts) pts.forEach((t, i) => {
       if (i < kbDots.length && keyboardZone().containsPoint(t.p)) { kbDots[i].position.copy(t.p); kbDots[i].visible = true; }
-      const k = nearestKey(t.p, KB_HILITE_R);
+      // over a key: exactly the key a press there hits; otherwise the nearest key (shows which key you're coming to)
+      const k = kbKeyAt(t.p) || nearestKey(t.p, KB_HILITE_R);
       if (k) lit.add(k);
     });
     for (const m of kbKeys) {
@@ -3558,7 +3578,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v38';
+  const GAME_VERSION = 'v39';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4378,7 +4398,20 @@
     wornBy: uid => { const o = others.get(uid); return o ? o.wearKey : null; },
     selfKey: () => selfAv ? selfAv.wearKey : null,
     letters: () => kbKeys.map(m => m.userData.value).filter(v => /^[A-Z]$/.test(v)).join(''),
-    badgeBoard: () => badgeBoard
+    badgeBoard: () => badgeBoard,
+    // wear an item, turn the hands[0] controller to q ([x,y,z,w]), pose my penguin and the hand item; returns the item's
+    // world rotation and what it should be (rig * controller * grip, or upright for the balloon)
+    handItem: (id, q, yaw = 0.7) => {
+      ensureSelfAv(); shop.wearing = shop.wearing.filter(i => !(ITEM_BY_ID[i] && ITEM_BY_ID[i].slot === 'hand')).concat(id);
+      applyCosmetics(selfAv, shop.wearing, false, myUserId || '');
+      const saved = hands[0].ctrl.quaternion.clone(); hands[0].ctrl.quaternion.fromArray(q);
+      poseAvatar(selfAv, V3(0, 1, 0), V3(-0.3, 0.8, -0.3), V3(0.3, 0.8, -0.3), yaw);
+      poseHandItem(selfAv);
+      const got = selfAv.handCos.getWorldQuaternion(new THREE.Quaternion());
+      const want = id === 'balloon' ? new THREE.Quaternion() : rig.quaternion.clone().multiply(hands[0].ctrl.quaternion).multiply(HAND_GRIP[id] || HAND_GRIP_DEFAULT);
+      hands[0].ctrl.quaternion.copy(saved);
+      return { angleDeg: +(got.angleTo(want) * 180 / Math.PI).toFixed(4), children: selfAv.handCos.children.length };
+    }
   };
   // water park test hooks: put the player somewhere, read where they are, ask probe about a point
   window.__parkTest = {
@@ -4709,6 +4742,8 @@
     selfAv.flame.visible = false;
     camera.getWorldDirection(tmp);
     poseAvatar(selfAv, headW.clone(), handPos[0], handPos[1], Math.atan2(-tmp.x, -tmp.z));
+    // hand item stuck to the hand in VR (not when the lollipop is in the mouth; outside VR as before)
+    if (inVR && !lolliInMouth()) poseHandItem(selfAv); else if (selfAv.handCos) selfAv.handCos.quaternion.identity();
     if (myHammer && inVR) {
       const rh = hands.find(x => x.side === 'right') || hands[1];
       poseHammerVR(myHammer, pressPointOf(rh), rh.ctrl);
