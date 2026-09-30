@@ -792,7 +792,8 @@
     try { await db.collection('bans').doc(b.id).delete(); toast('הסרת את הבאן של ' + (b.name || 'השחקן'), 2); tone(700, 0.15, 'triangle', 0.1); }
     catch (e) { toast('לא הצלחתי. נסה שוב', 2); }
   }
-  let heldHammer = '', hammerHitThisSwing = false, doorOpenShared = false;
+  let heldHammer = '', hammerHitThisSwing = false;
+  const doorOpenShared = false; // the admin door is always shut; only admins pass through it (see probe)
   let lolliMouth = false, lolliArmed = true;
   const lolliInMouth = () => lolliMouth && shop.wearing.includes('lollipop');
   async function hammerHit(o) {
@@ -833,13 +834,6 @@
   }
   function pressAdminButton(b) {
     if (!isAdmin()) { toast('רק אדמינים יכולים ללחוץ על זה', 1.8); tone(160, 0.15, 'square', 0.08); return; }
-    if (b.door) {
-      tone(b.take ? 880 : 300, 0.1, 'triangle', 0.12);
-      doorOpenShared = b.take;
-      if (db) db.doc('world/door').set({ open: b.take, at: Date.now() }).catch(() => {});
-      toast(b.take ? 'הדלת נפתחה 🚪' : 'הדלת נסגרה 🔒', 1.8);
-      return;
-    }
     tone(b.take ? 880 : 300, 0.1, 'triangle', 0.12);
     if (b.take) { setHeld(b.id); toast('לקחת את הפטיש ' + HAMMER_LABEL[b.id] + ' 🔨', 2); }
     else if (heldHammer === b.id) { setHeld(''); toast('החזרת את הפטיש', 1.5); }
@@ -887,8 +881,8 @@
       if (parts[green]) adminButtons.push({ mesh: parts[green], id, take: true });
       if (parts[red]) adminButtons.push({ mesh: parts[red], id, take: false });
     });
-    if (parts['Cube.013']) adminButtons.push({ mesh: parts['Cube.013'], door: true, take: true });
-    if (parts['Cube.018']) adminButtons.push({ mesh: parts['Cube.018'], door: true, take: false });
+    // no door buttons on the wall any more: the door never opens, admins just walk through it
+    ['Cube.013', 'Cube.018'].forEach(n => { if (parts[n]) parts[n].visible = false; });
     // ban list on the inside of the side wall
     banCv = document.createElement('canvas'); banCv.width = 512; banCv.height = 320;
     banTex = new THREE.CanvasTexture(banCv);
@@ -906,6 +900,26 @@
     }
   }
   const isAdmin = () => !!myUserId && (myUserId === OWNER_ID || adminIds.has(myUserId));
+  const isAdminUid = uid => !!uid && (uid === OWNER_ID || adminIds.has(uid));
+  // Player ID: 10 letters/digits, always the same for the same uid (identical to the claude.ai version)
+  function idOf(uid) {
+    if (!uid) return '';
+    const A = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let h1 = 2166136261, h2 = 0x9e3779b9;
+    for (let i = 0; i < uid.length; i++) {
+      const c = uid.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+      h2 = Math.imul(h2 ^ c, 2246822507) >>> 0; h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+    }
+    let out = '';
+    for (let i = 0; i < 10; i++) {
+      const h = i % 2 ? h2 : h1;
+      out += A[h % 36];
+      if (i % 2) { h2 = Math.imul(h2 ^ (h2 >>> 15), 2654435761) >>> 0; }
+      else { h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) >>> 0; }
+    }
+    return out;
+  }
 
   // ---- Low-poly trees (model the player brought) ----
   {
@@ -1109,9 +1123,14 @@
     c.fillStyle = '#5b6068'; c.fillRect(0, 0, 512, 320);
     c.direction = 'ltr'; c.textAlign = 'left'; c.textBaseline = 'middle';
     c.fillStyle = '#ffffff'; c.font = '700 40px Consolas, monospace';
-    const label = kbMode === 'name' ? 'NAME:' : kbMode === 'color' ? 'COLOR:' : kbMode === 'admin' ? 'GIVE ADMIN:' : 'CODE:';
+    const label = kbMode === 'name' ? 'NAME:' : kbMode === 'color' ? 'COLOR:' : kbMode === 'id' ? 'YOUR ID:' : 'CODE:';
     c.fillText(label, 28, 60);
-    if (kbMode === 'color') {
+    if (kbMode === 'id') {
+      const id = idOf(myUserId);
+      c.fillStyle = id ? '#ffcf4a' : '#c8c8c8';
+      c.font = id ? '700 76px Consolas, monospace' : '700 40px Consolas, monospace'; // 76px: 10 characters fit the screen
+      c.fillText(id || 'NO ID (OFFLINE)', 28, 150);
+    } else if (kbMode === 'color') {
       c.fillStyle = myColor; c.fillRect(28, 100, 90, 60);
       c.strokeStyle = '#ffffff'; c.lineWidth = 3; c.strokeRect(28, 100, 90, 60);
     } else {
@@ -1156,7 +1175,7 @@
   });
   rows.forEach(r => r.sort((a, b) => a.userData.part.loc[1] - b.userData.part.loc[1]));
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ADMIN', 'MADMIN'], ['★', 'NOP'], ['★', 'NOP'], ['DEL', 'DEL']],
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['★', 'NOP'], ['★', 'NOP'], ['DEL', 'DEL']],
     [...'ABCDEFGH'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
     [...'IJKLMNOPQ'].map(c => [c, c]),
     [...'RSTUVWXYZ'].map(c => [c, c])
@@ -1210,18 +1229,18 @@
     m.userData.cool = 0.18; m.userData.press = 0.12;
     tone(650 + Math.random() * 250, 0.05, 'square', 0.06);
     const v = m.userData.value;
+    if (v === 'MID') { showMyId(); return; }
+    if (kbMode === 'id' && !/^M(CODE|NAME|COLOR)$/.test(v)) return; // ID screen: typing keys and ENTER do nothing
     if (v === 'DEL') kbText = kbText.slice(0, -1);
     else if (v === 'CLR') kbText = '';
     else if (v === 'NOP') return;
-    else if (v === 'SPC') { if ((kbMode === 'name' || kbMode === 'admin') && kbText.length < 12 && kbText && !kbText.endsWith(' ')) kbText += ' '; }
-    else if (v === 'MADMIN') { if (myUserId !== OWNER_ID) { toast('רק הבעלים של המשחק יכול לתת אדמין', 2.5); return; } kbMode = 'admin'; kbText = ''; applyKeyLabels(); drawMonitor(); return; }
+    else if (v === 'SPC') { if (kbMode === 'name' && kbText.length < 12 && kbText && !kbText.endsWith(' ')) kbText += ' '; }
     else if (v === 'MCODE' || v === 'MNAME' || v === 'MCOLOR') { kbMode = v === 'MNAME' ? 'name' : v === 'MCOLOR' ? 'color' : 'code'; kbText = ''; kbMsg = ''; applyKeyLabels(); drawMonitor(); return; }
     else if (kbMode === 'color') {
       if (m.userData.colorHex) { setMyColor(m.userData.colorHex); drawMonitor(); kbSay('הפינגווין שלך נצבע! 🎨'); }
       return;
     }
     else if (v === 'ENT') {
-      if (kbMode === 'admin') { if (!kbText) { kbSay('תקליד שם של שחקן'); return; } toggleAdmin(kbText); kbText = ''; drawMonitor(); return; }
       if (kbMode === 'name') {
         if (!kbText) { kbSay('תקליד שם קודם', '#ff8a70'); return; }
         setMyName(kbText); kbSay('השם שלך עכשיו: ' + myName, '#aaffaa', 4); kbText = ''; tagSound();
@@ -1231,6 +1250,11 @@
     }
     else if (kbText.length < 12) kbText += v;
     kbMsg = ''; drawMonitor();
+  }
+  function showMyId() {
+    kbMode = 'id'; kbText = ''; kbMsg = ''; applyKeyLabels(); drawMonitor();
+    const id = idOf(myUserId);
+    if (id && db) db.collection('ids').doc(id).set({ uid: myUserId, name: myName, at: Date.now() }).catch(() => {});
   }
   function setMyName(text) {
     myName = cleanName((text || '').trim());
@@ -1259,11 +1283,20 @@
       m.position.y = u.baseY - (u.press > 0 ? 0.012 : 0);
     }
     // VR: real hand positions (handWorld); each hand presses its nearest key within KB_PRESS_R
-    if (handPoints) for (const f of vrPressNearest('key', handPoints, kbKeys, (m, o) => m.getWorldPosition(o), KB_PRESS_R, 0)) {
+    if (handPoints) for (const f of vrPressNearest('key', handPoints, kbKeys, kbTouchPoint, KB_PRESS_R, 0)) {
       vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15);
     }
   }
-  const KB_PRESS_R = 0.1;
+  // Each hand presses only its nearest key within KB_PRESS_R, once per touch (move the hand KB_PRESS_R + 3 cm away to
+  // press it again). Distance is measured to where a hand touching that key actually is: a hand on the desk is held
+  // HAND_R above the desk top by the locomotion, ~9 cm above the key centres, so it could never get 7 cm from a centre.
+  const KB_PRESS_R = 0.07;
+  let kbTouchY = null;
+  function kbTouchPoint(m, out) {
+    if (kbTouchY === null) kbTouchY = new THREE.Box3().setFromObject(pcParts['Cube']).max.y + HAND_R;
+    m.getWorldPosition(out); out.y = kbTouchY;
+    return out;
+  }
   let lastBlink = -1;
   const _kw = new THREE.Vector3();
 
@@ -1308,9 +1341,9 @@
   const ROW_Y0 = 44, ROW_H = 47;
   const BTN_MUTE = [16, 92], BTN_REP = [100, 170];
   function drawPlayerList() {
-    const list = [{ name: myName, color: myColor, it: myIt, me: true }];
-    others.forEach((o, peer) => { if (o.ready) list.push({ name: o.name, color: o.color, it: o.it, me: false, peer }); });
-    const key = roomCode + '|' + list.map(p => p.name + p.color + p.it + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
+    const list = [{ name: myName, color: myColor, it: myIt, me: true, uid: myUserId }];
+    others.forEach((o, peer) => { if (o.ready) list.push({ name: o.name, color: o.color, it: o.it, me: false, peer, uid: o.uid }); });
+    const key = roomCode + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
     if (key === lastListKey) return;
     lastListKey = key;
     boardList = list.slice(0, 10);
@@ -1333,7 +1366,12 @@
       c.font = (p.me ? '900 ' : '700 ') + '25px Rubik, sans-serif';
       let label = p.name + (p.me ? ' (אתה)' : '') + (p.it ? ' 🔥' : '');
       if (label.length > 14) label = label.slice(0, 13) + '…';
-      c.fillText(label, 402, y);
+      c.fillText(label, 402, y - 7);
+      // small ID line under the name, with a crown for admins / the owner
+      c.font = '700 13px Consolas, monospace'; c.fillStyle = muted ? 'rgba(255,230,160,0.45)' : '#ffe6a0';
+      c.direction = 'ltr';
+      c.fillText('ID: ' + (idOf(p.uid) || '—') + (isAdminUid(p.uid) ? ' 👑' : ''), 402, y + 14);
+      c.direction = 'rtl';
       if (!p.me) {
         btn(BTN_MUTE[0], BTN_MUTE[1], y, muted ? 'בטל השתקה' : 'השתק', muted ? '#ffcf4a' : 'rgba(255,255,255,0.18)', muted ? '#2a1a05' : '#fff');
         btn(BTN_REP[0], BTN_REP[1], y, reported ? 'דווח ✓' : 'דווח', reported ? 'rgba(255,255,255,0.1)' : '#c0503a', '#fff');
@@ -1436,6 +1474,53 @@
     boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
     if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv));
   }
+  // Self-test for the ID / keyboard / admin-door / board changes. Temporarily swaps in a fake uid and a fake player,
+  // restores everything afterwards, and returns images of the monitor and the player board.
+  window.__featureTest = (fakeUid = 'u_TESTPLAYER_123', otherUid = 'u_OTHER_456') => {
+    const out = [], ok = (label, cond, info = '') => out.push({ label, ok: !!cond, info });
+    const saved = { uid: myUserId, mode: kbMode, text: kbText, admins: new Set(adminIds) };
+    const key = v => kbKeys.find(m => m.userData.value === v);
+    const press = v => { const m = key(v); m.userData.cool = 0; pressKey(m); };
+    let monitor = '', board = '';
+    try {
+      const id = idOf(fakeUid);
+      ok('idOf: 10 letters/digits', /^[0-9A-Z]{10}$/.test(id), id);
+      ok('idOf: same uid -> same ID', idOf(fakeUid) === id);
+      ok('idOf: different uid -> different ID', idOf(otherUid) !== id, idOf(otherUid));
+      ok('idOf: no uid -> empty', idOf('') === '' && idOf(null) === '');
+      ok('keyboard: ADMIN key gone, ID key present', !kbKeys.some(m => /ADMIN/.test(m.userData.value)) && !!key('MID'));
+      myUserId = fakeUid; kbText = 'ABC';
+      press('MID');
+      ok('ID key -> ID screen', kbMode === 'id');
+      ['A', 'Q', 'ENT', '1', 'SPC', 'DEL', 'CLR'].forEach(press);
+      ok('ID screen: letters/digits/ENTER/DEL do nothing', kbMode === 'id' && kbText === '', 'text="' + kbText + '"');
+      drawMonitor(); monitor = monCv.toDataURL('image/png');
+      press('MCODE'); ok('CODE key leaves the ID screen', kbMode === 'code');
+      // admin door: solid for a normal player, passable for an admin
+      const door = colliders.find(c => c.admin);
+      const mid = door.min.clone().add(door.max).multiplyScalar(0.5);
+      adminIds.clear();
+      const hitNormal = probe(mid, 0.16);
+      myUserId = OWNER_ID; const hitOwner = probe(mid, 0.16);
+      myUserId = fakeUid; adminIds.add(fakeUid); const hitAdmin = probe(mid, 0.16); adminIds.clear();
+      ok('door blocks a normal player', !!hitNormal);
+      ok('door lets the owner through', !hitOwner);
+      ok('door lets an admin through', !hitAdmin);
+      ok('door buttons removed from the wall', adminButtons.length === 6 && !adminButtons.some(b => b.door), adminButtons.length + ' admin buttons');
+      ok('door never opens (doorOpenShared)', doorOpenShared === false);
+      // board: me (admin) + another player with an ID
+      adminIds.add(fakeUid);
+      others.set('__test', { ready: true, name: 'דני', color: '#ffcf4a', it: false, uid: otherUid });
+      lastListKey = ''; drawPlayerList(); board = listCv.toDataURL('image/png');
+      ok('board shows both players', boardList.length === 2 && boardList[1].uid === otherUid);
+    } finally {
+      others.delete('__test');
+      myUserId = saved.uid; kbMode = saved.mode; kbText = saved.text;
+      adminIds.clear(); saved.admins.forEach(x => adminIds.add(x));
+      applyKeyLabels(); drawMonitor(); lastListKey = '';
+    }
+    return { results: out, monitor, board };
+  };
   // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
   // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
   window.__vrButtonsTest = () => {
@@ -1460,7 +1545,26 @@
     };
     const was = { visible: wrist.visible, parent: wrist.parent, pos: wrist.position.clone(), q: wrist.quaternion.clone() };
     try {
-      kbKeys.forEach(m => check('key', String(m.userData.value), m.getWorldPosition(V3()), r => r.k === 'key' && r.a[0] === m));
+      kbKeys.forEach(m => check('key', String(m.userData.value), kbTouchPoint(m, V3()), r => r.k === 'key' && r.a[0] === m));
+      // L vs K (the reported bug): hand resting on L, 5 cm off L towards K, and exactly between them
+      const keyOf = v => kbKeys.find(m => m.userData.value === v), kL = keyOf('L'), kK = keyOf('K');
+      const pL = kbTouchPoint(kL, V3()), pK = kbTouchPoint(kK, V3()), toK = pK.clone().sub(pL).normalize();
+      check('keyL', 'hand on L', pL, r => r.k === 'key' && r.a[0] === kL);
+      check('keyL', '5 cm from L towards K', pL.clone().addScaledVector(toK, 0.05), r => r.k === 'key' && r.a[0] === kL);
+      {
+        vrPress.clear(); vrCool.clear(); rec.length = 0;
+        const mid = pL.clone().lerp(pK, 0.5);
+        world([{ p: far.clone(), h: R }]); world([{ p: mid, h: R }]);
+        results.push({ kind: 'keyL', label: 'exactly between K and L (' + (pL.distanceTo(pK) / 2 * 100).toFixed(1) + ' cm from each) presses nothing', ok: rec.length === 0, fired: rec.map(r => r.a[0].userData.value).join(',') || '-', repeats: 0, again: 0 });
+        // why the old key-centre distance couldn't work: a hand resting on L vs L's centre
+        const c = kL.getWorldPosition(V3());
+        results.push({ kind: 'keyL', label: 'resting hand is ' + (pL.distanceTo(c) * 100).toFixed(1) + ' cm above L centre (> 7 cm)', ok: pL.distanceTo(c) > KB_PRESS_R, fired: '-', repeats: 0, again: 0 });
+        // once per touch: slide off by 2 cm and back without lifting -> no second press
+        vrPress.clear(); vrCool.clear(); rec.length = 0;
+        world([{ p: far.clone(), h: R }]); world([{ p: pL.clone(), h: R }]);
+        world([{ p: pL.clone().add(V3(0.02, 0, 0)), h: R }]); world([{ p: pL.clone(), h: R }]);
+        results.push({ kind: 'keyL', label: 'small wiggle on L = one press', ok: rec.length === 1, fired: rec.map(r => r.a[0].userData.value).join(','), repeats: 0, again: 0 });
+      }
       adminButtons.forEach(b => check('admin', b.door ? (b.take ? 'door open' : 'door close') : `${b.id} ${b.take ? 'take' : 'return'}`, meshCenter(b.mesh, V3()), r => r.k === 'admin' && r.a[0] === b));
       wardrobeButtons.forEach(b => check('wardrobe', b.act, meshCenter(b.mesh, V3()), r => r.k === 'wardrobe' && r.a[0] === b));
       shopDisplays.forEach(d => check('shop', d.it.name, shopCenter(d, V3()), r => r.k === 'shop' && r.a[0] === d));
@@ -1494,7 +1598,7 @@
     let best = null;
     const adm = isAdmin();
     for (const c of colliders) {
-      if (c.admin && (adm || doorOpenShared)) continue;
+      if (c.admin && adm) continue; // admin-only door: solid for everyone else
       if (p.x < c.min.x - r || p.x > c.max.x + r || p.y < c.min.y - r || p.y > c.max.y + r || p.z < c.min.z - r || p.z > c.max.z + r) continue;
       const pens = [
         [p.x - (c.min.x - r), V3(-1, 0, 0), c.min.x - r, 'x'],
@@ -1938,7 +2042,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v13';
+  const GAME_VERSION = 'v14';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2812,26 +2916,13 @@
       if (db) db.collection('admins').onSnapshot(snap => {
         adminIds.clear(); snap.docs.forEach(d => adminIds.add(d.id));
       }, () => {});
-      if (db) db.doc('world/door').onSnapshot(d => { const v = d && d.data ? d.data() : null; doorOpenShared = !!(v && v.open); }, () => {});
       if (db) db.collection('bans').onSnapshot(snap => {
         bans = snap.docs.map(d => { const v = d.data() || {}; return { id: d.id, until: typeof v.until === 'number' ? v.until : 0, name: typeof v.name === 'string' ? v.name.slice(0, 14) : '' }; });
         banKey = ''; drawBanBoard(); checkBan();
       }, () => {});
     } catch (e) { db = null; }
   })();
-  async function toggleAdmin(nameText) {
-    if (myUserId !== OWNER_ID) { toast('רק הבעלים של המשחק יכול לתת אדמין', 2.5); return; }
-    const want = (nameText || '').trim().toLowerCase();
-    if (!want) { toast('תקליד את השם של השחקן', 2); return; }
-    const o = [...others.values()].find(x => x.ready && x.name.toLowerCase() === want);
-    if (!o) { toast('לא מצאתי בחדר שחקן בשם ' + nameText, 2.5); return; }
-    if (!o.uid) { toast('אי אפשר לתת אדמין לשחקן הזה כרגע', 2.5); return; }
-    if (!db) { toast('אין חיבור כרגע, נסה שוב', 2); return; }
-    try {
-      if (adminIds.has(o.uid)) { await db.collection('admins').doc(o.uid).delete(); toast(o.name + ' כבר לא אדמין', 2.5); }
-      else { await db.collection('admins').doc(o.uid).set({ at: Date.now() }); toast(o.name + ' עכשיו אדמין! 👑', 2.5); tagSound(); }
-    } catch (e) { toast('לא הצלחתי. נסה שוב', 2); }
-  }
+
   function saveNameFromTerm() {
     const v = $('nameCode').value.trim();
     if (!v) { $('termErr').textContent = 'תכתוב שם קודם'; return; }
