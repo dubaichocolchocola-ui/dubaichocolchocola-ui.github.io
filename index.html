@@ -202,6 +202,52 @@
     if (extra) extra(inner);
     g.add(inner); return g;
   }
+  const cosMat = (c, r = 0.6, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+  // ---- cosmetic look helpers: fabric/leather/knit patterns drawn once and reused ----
+  const cosTexCache = {};
+  function cosPattern(kind) {
+    if (cosTexCache[kind]) return cosTexCache[kind];
+    const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    const noise = (a, lo, hi) => { for (let i = 0; i < a; i++) { x.fillStyle = `rgba(${Math.random() < 0.5 ? '0,0,0' : '255,255,255'},${lo + Math.random() * (hi - lo)})`; x.fillRect(Math.random() * 128, Math.random() * 128, 2, 2); } };
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, 128, 128);
+    if (kind === 'leather') { noise(2600, 0.03, 0.09); x.strokeStyle = 'rgba(0,0,0,0.08)'; for (let i = 0; i < 30; i++) { x.beginPath(); x.moveTo(Math.random() * 128, Math.random() * 128); x.lineTo(Math.random() * 128, Math.random() * 128); x.stroke(); } }
+    else if (kind === 'knit' || kind === 'knitWhite') { for (let r = 0; r < 16; r++) for (let k = 0; k < 16; k++) { x.fillStyle = 'rgba(0,0,0,0.13)'; x.beginPath(); x.ellipse(k * 8 + 4, r * 8 + 4, 2.6, 3.6, 0, 0, 7); x.fill(); } if (kind === 'knit') { x.fillStyle = 'rgba(255,255,255,0.55)'; x.fillRect(0, 88, 128, 12); } }
+    else if (kind === 'velvet') { noise(3000, 0.02, 0.06); const gr = x.createLinearGradient(0, 0, 128, 128); gr.addColorStop(0, 'rgba(255,255,255,0.08)'); gr.addColorStop(1, 'rgba(0,0,0,0.1)'); x.fillStyle = gr; x.fillRect(0, 0, 128, 128); }
+    else if (kind === 'fur') { for (let i = 0; i < 900; i++) { x.strokeStyle = `rgba(0,0,0,${0.03 + Math.random() * 0.06})`; const px = Math.random() * 128, py = Math.random() * 128; x.beginPath(); x.moveTo(px, py); x.lineTo(px + Math.random() * 3 - 1.5, py + 3 + Math.random() * 3); x.stroke(); } }
+    else if (kind === 'tortoise') { for (let i = 0; i < 60; i++) { x.fillStyle = `rgba(${Math.random() < 0.5 ? '40,20,5' : '220,160,80'},${0.35 + Math.random() * 0.4})`; x.beginPath(); x.ellipse(Math.random() * 128, Math.random() * 128, 4 + Math.random() * 10, 3 + Math.random() * 6, Math.random() * 3, 0, 7); x.fill(); } }
+    else if (kind === 'dots') { x.fillStyle = 'rgba(255,255,255,0.85)'; for (let r = 0; r < 6; r++) for (let k = 0; k < 6; k++) { x.beginPath(); x.arc(k * 22 + (r % 2) * 11 + 6, r * 22 + 6, 4, 0, 7); x.fill(); } }
+    else if (kind === 'stripes') { for (let i = 0; i < 8; i++) { if (i % 2) { x.fillStyle = 'rgba(255,255,255,0.75)'; x.fillRect(0, i * 16, 128, 16); } } noise(1500, 0.02, 0.06); }
+    else if (kind === 'waffle') { x.strokeStyle = 'rgba(90,50,10,0.45)'; x.lineWidth = 3; for (let i = -128; i < 256; i += 16) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + 128, 128); x.stroke(); x.beginPath(); x.moveTo(i + 128, 0); x.lineTo(i, 128); x.stroke(); } }
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2);
+    return (cosTexCache[kind] = t);
+  }
+  // one smooth cone that bends to the side (and can droop), instead of stacked pieces
+  function bentCone(r, h, bendX, droop = 0, rs = 32, hs = 28) {
+    const geo = new THREE.ConeGeometry(r, h, rs, hs); geo.translate(0, h / 2, 0);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const t = Math.max(0, pos.getY(i)) / h;
+      pos.setX(i, pos.getX(i) + bendX * t * t);
+      pos.setY(i, pos.getY(i) - droop * t * t * t);
+    }
+    geo.computeVertexNormals(); return geo;
+  }
+  const cosTex = (kind, color) => new THREE.MeshStandardMaterial({ color, map: cosPattern(kind), roughness: kind === 'tortoise' ? 0.25 : 0.85 });
+  const cosGloss = color => new THREE.MeshPhysicalMaterial({ color, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.08 });
+  function cosLabel(text, fg, bg) {
+    const key = 'lbl' + text + fg + bg; if (cosTexCache[key]) return cosTexCache[key];
+    const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    x.fillStyle = bg; x.beginPath(); x.arc(64, 64, 62, 0, 7); x.fill(); x.fillStyle = fg; x.font = '900 84px Rubik, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(text, 64, 70);
+    return (cosTexCache[key] = new THREE.CanvasTexture(c));
+  }
+  function cosGlow() {
+    if (cosTexCache.glow) return cosTexCache.glow;
+    const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+    const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,0.35)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+    return (cosTexCache.glow = new THREE.CanvasTexture(c));
+  }
+
   const SHOP_ITEMS = [
     { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', dispY: -0.44, build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
     { id: 'lollipop', name: 'סוכרייה על מקל', price: 15, icon: '🍭', slot: 'hand', dispY: 0.12,
@@ -214,7 +260,7 @@
       cone.position.y = 0.6 + 0.47; cone.rotation.z = 0.12;
       const pom = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffffff }));
       pom.position.set(-0.06, 0.6 + 0.94, 0); g.add(cone, pom); return g; } },
-    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', dispY: -0.01, dispZ: 0.56, build: () => {
+    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', slot: 'face', dispY: -0.01, dispZ: 0.56, build: () => {
       const g = new THREE.Group();
       const m = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.4 });
       [-0.245, 0.175].forEach(x => { const l = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.05), m); l.position.set(x, 0.12, -0.8); g.add(l); });
@@ -226,12 +272,251 @@
       const band = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.2, 16, 1, true), m); band.material.side = THREE.DoubleSide; band.position.y = 0.66; g.add(band);
       for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; const sp = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.22, 6), m); sp.position.set(Math.cos(a) * 0.4, 0.86, Math.sin(a) * 0.4); g.add(sp); }
       const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.07), new THREE.MeshStandardMaterial({ color: 0xe53935, roughness: 0.1 })); gem.position.set(0, 0.68, -0.43); g.add(gem);
+      return g; } },
+    { id: 'cowboy', name: 'כובע קאובוי', price: 35, icon: '🤠', build: () => {
+      const g = new THREE.Group(), leather = cosTex('leather', 0x8a5a2b), band = cosMat(0x3b2412, 0.6);
+      // brim that curls up at the sides
+      const brimPts = []; for (let i = 0; i <= 10; i++) { const r = 0.34 + i * 0.066; brimPts.push(new THREE.Vector2(r, 0.62 + Math.pow(i / 10, 3) * 0.12)); }
+      const brim = new THREE.Mesh(new THREE.LatheGeometry(brimPts, 40), leather); brim.scale.z = 0.82;
+      const crownPts = [[0.44, 0.62], [0.43, 0.8], [0.4, 0.98], [0.3, 1.06], [0.12, 1.02], [0, 1.04]].map(([x, y]) => new THREE.Vector2(x, y));
+      const crown = new THREE.Mesh(new THREE.LatheGeometry(crownPts, 32), leather); crown.scale.z = 0.86;
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.445, 0.445, 0.09, 32, 1, true), band); b.position.y = 0.69; b.scale.z = 0.86; b.material.side = THREE.DoubleSide;
+      const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.03), cosMat(0xe0b64a, 0.2, 0.9)); buckle.position.set(0, 0.69, -0.39);
+      g.add(brim, crown, b, buckle); return g; } },
+    { id: 'beanie', name: 'כובע גרב', price: 15, icon: '🧶', build: () => {
+      const g = new THREE.Group(), knit = cosTex('knit', 0xd9383a);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.67, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), knit); dome.position.y = 0.3;
+      const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.65, 0.1, 10, 40), cosTex('knitWhite', 0xf2efe6)); cuff.rotation.x = Math.PI / 2; cuff.position.y = 0.36;
+      const pom = new THREE.Mesh(new THREE.IcosahedronGeometry(0.18, 2), cosMat(0xffffff, 1)); pom.position.y = 1.02;
+      for (let i = 0; i < 14; i++) { const f = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), cosMat(0xf4f0ea, 1)); const a = Math.random() * 6.28, e = Math.random() * 1.4; f.position.set(Math.cos(a) * Math.sin(e) * 0.18, 1.02 + Math.cos(e) * 0.18, Math.sin(a) * Math.sin(e) * 0.18); g.add(f); }
+      g.add(dome, cuff, pom); return g; } },
+    { id: 'cap', name: 'כובע מצחייה', price: 15, icon: '🧢', build: () => {
+      const g = new THREE.Group(), m = cosMat(0x2e6fd8, 0.65);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.61, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), m); dome.position.y = 0.4;
+      for (let i = 0; i < 6; i++) { const seam = new THREE.Mesh(new THREE.TorusGeometry(0.612, 0.008, 4, 24, Math.PI / 2), cosMat(0x1f4fa8, 0.8)); seam.rotation.y = i * Math.PI / 3; seam.position.y = 0.4; g.add(seam); }
+      const bill = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.035, 32, 1, false, Math.PI / 2, Math.PI), cosMat(0x1f4fa8, 0.6)); bill.position.set(0, 0.45, -0.45); bill.rotation.x = 0.14;
+      const logo = new THREE.Mesh(new THREE.CircleGeometry(0.13, 24), new THREE.MeshStandardMaterial({ map: cosLabel('P', '#ffffff', '#e53935'), roughness: 0.6 }));
+      logo.position.set(0, 0.72, -0.53); logo.rotation.set(-0.55, Math.PI, 0);
+      const button = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), m); button.position.y = 1.01;
+      g.add(dome, bill, logo, button); return g; } },
+    { id: 'viking', name: 'קסדת ויקינג', price: 45, icon: '⚔️', build: () => {
+      const g = new THREE.Group(), steel = cosMat(0xaab3bb, 0.28, 0.85), bronze = cosMat(0xb07a36, 0.35, 0.8), horn = cosMat(0xf1e6cc, 0.55);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.67, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), steel); dome.position.y = 0.28;
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.67, 0.065, 10, 40), bronze); rim.rotation.x = Math.PI / 2; rim.position.y = 0.3;
+      const ridge = new THREE.Mesh(new THREE.TorusGeometry(0.67, 0.045, 8, 32, Math.PI), bronze); ridge.position.y = 0.28;
+      const nose = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.05), bronze); nose.position.set(0, 0.2, -0.7);
+      for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, rv = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 4), bronze); rv.position.set(Math.cos(a) * 0.72, 0.3, Math.sin(a) * 0.72); g.add(rv); }
+      [-1, 1].forEach(s => { // one smooth curved horn on each side: out, then up
+        const h = new THREE.Mesh(bentCone(0.12, 0.62, -0.36 * s, 0, 20, 24), horn);
+        h.position.set(s * 0.6, 0.5, 0); h.rotation.z = -s * 1.25;
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.03, 8, 20), bronze); ring.position.copy(h.position); ring.rotation.set(0, Math.PI / 2, 0); ring.rotation.z = -s * 1.25;
+        g.add(h, ring);
+      });
+      g.add(dome, rim, ridge, nose); return g; } },
+    { id: 'wizard', name: 'כובע קוסם', price: 60, icon: '🧙', build: () => {
+      const g = new THREE.Group(), m = cosTex('velvet', 0x4b2c8f), gold = cosMat(0xffd84a, 0.25, 0.85);
+      const brim = new THREE.Mesh(new THREE.LatheGeometry([[0.4, 0.6], [0.9, 0.58], [0.95, 0.61]].map(([x, y]) => new THREE.Vector2(x, y)), 40), m);
+      const cone = new THREE.Mesh(bentCone(0.47, 1.5, 0.32, 0.12), m); cone.position.y = 0.6; g.add(cone);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.1, 32, 1, true), gold); band.position.y = 0.66; band.material.side = THREE.DoubleSide;
+      for (let i = 0; i < 6; i++) { const st = new THREE.Mesh(new THREE.OctahedronGeometry(0.055), new THREE.MeshStandardMaterial({ color: 0xffe07a, emissive: 0xffc933, emissiveIntensity: 0.6 })); st.position.set(Math.cos(i * 1.1) * (0.36 - i * 0.04), 0.82 + i * 0.16, Math.sin(i * 1.1) * (0.36 - i * 0.04)); g.add(st); }
+      const moon = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.03, 8, 16, Math.PI * 1.3), gold); moon.position.set(0.05, 0.95, -0.34); moon.rotation.y = Math.PI; g.add(moon);
+      g.add(brim, band); return g; } },
+    { id: 'chef', name: 'כובע שף', price: 25, icon: '👨‍🍳', build: () => {
+      const g = new THREE.Group(), m = cosMat(0xffffff, 0.85);
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.42, 32), m); band.position.y = 0.79;
+      for (let i = 0; i < 12; i++) { const pl = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.4, 0.02), cosMat(0xe6e6e6, 0.9)); const a = i / 12 * Math.PI * 2; pl.position.set(Math.cos(a) * 0.475, 0.79, Math.sin(a) * 0.475); g.add(pl); }
+      const puffGeo = new THREE.SphereGeometry(0.6, 48, 24); const pp = puffGeo.attributes.position;
+      for (let i = 0; i < pp.count; i++) { // soft puffy folds all around
+        const x = pp.getX(i), y = pp.getY(i), z = pp.getZ(i), a = Math.atan2(z, x), k = 1 + 0.07 * Math.sin(a * 8) * Math.max(0, 1 - Math.abs(y) / 0.6);
+        pp.setXYZ(i, x * k, y * 0.62, z * k);
+      }
+      puffGeo.computeVertexNormals();
+      const puff = new THREE.Mesh(puffGeo, m); puff.position.y = 1.13; g.add(puff);
+      g.add(band); return g; } },
+    { id: 'propeller', name: 'כובע פרופלור', price: 30, icon: '🚁', build: () => {
+      const g = new THREE.Group();
+      [0xe53935, 0xffd23a, 0x2e7dd8, 0x43a047].forEach((c, i) => { const q = new THREE.Mesh(new THREE.SphereGeometry(0.61, 16, 12, i * Math.PI / 2, Math.PI / 2, 0, Math.PI / 2), cosGloss(c)); q.position.y = 0.4; g.add(q); });
+      const bill = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.03, 24, 1, false, Math.PI / 2, Math.PI), cosGloss(0xe53935)); bill.position.set(0, 0.44, -0.44); bill.rotation.x = 0.12;
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.25, 8), cosMat(0x888888, 0.3, 0.8)); stick.position.y = 1.1;
+      const hub = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), cosGloss(0xffd23a)); hub.position.y = 1.23;
+      const rotor = new THREE.Group(); rotor.position.y = 1.23;
+      [0, Math.PI].forEach((r, i) => { const b = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.015, 0.12), cosGloss(i ? 0x2e7dd8 : 0xe53935)); b.position.x = 0.3; b.rotation.x = 0.25; const p = new THREE.Group(); p.rotation.y = r; p.add(b); rotor.add(p); });
+      hub.onBeforeRender = () => { rotor.rotation.y = performance.now() * 0.012; };
+      g.add(bill, stick, hub, rotor); return g; } },
+    { id: 'santa', name: 'כובע סנטה', price: 25, icon: '🎅', build: () => {
+      const g = new THREE.Group(), red = cosTex('velvet', 0xc62828), fur = cosTex('fur', 0xffffff);
+      const cone = new THREE.Mesh(bentCone(0.56, 1.05, 0.62, 0.42), red); cone.position.y = 0.62; g.add(cone);
+      const x = 0.62, y = 0.62 + 1.05 - 0.42;
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.14, 12, 40), fur); rim.rotation.x = Math.PI / 2; rim.position.y = 0.62;
+      const pom = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15, 2), fur); pom.position.set(x, y, 0);
+      g.add(rim, pom); return g; } },
+    { id: 'bunny', name: 'אוזני ארנב', price: 20, icon: '🐰', build: () => {
+      const g = new THREE.Group(), fur = cosTex('fur', 0xffffff);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.035, 8, 32, Math.PI), cosGloss(0xff8fb8)); band.position.y = 0.05; band.rotation.y = Math.PI / 2;
+      [-1, 1].forEach(s => {
+        const e = new THREE.Mesh(new THREE.SphereGeometry(0.2, 18, 14), fur); e.scale.set(0.72, 2.6, 0.45); e.position.set(s * 0.26, 1.15, 0.02); e.rotation.z = -s * 0.2;
+        const inn = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 10), cosMat(0xf7a8c4, 0.9)); inn.scale.set(0.72, 3.3, 0.3); inn.position.set(s * 0.26, 1.12, -0.06); inn.rotation.z = -s * 0.2;
+        g.add(e, inn); });
+      g.add(band); return g; } },
+    { id: 'catears', name: 'אוזני חתול', price: 20, icon: '🐱', build: () => {
+      const g = new THREE.Group(), fur = cosTex('fur', 0x2b2b2b);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.035, 8, 32, Math.PI), cosGloss(0x222222)); band.position.y = 0.05; band.rotation.y = Math.PI / 2;
+      [-1, 1].forEach(s => {
+        const e = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.44, 3), fur); e.position.set(s * 0.42, 0.84, 0); e.rotation.set(0, Math.PI / 6, -s * 0.35);
+        const inn = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.28, 3), cosMat(0xf7a8c4, 0.9)); inn.position.set(s * 0.41, 0.8, -0.09); inn.rotation.set(0, Math.PI / 6, -s * 0.35);
+        g.add(e, inn); });
+      g.add(band); return g; } },
+    { id: 'flowers', name: 'זר פרחים', price: 30, icon: '🌸', build: () => {
+      const g = new THREE.Group(), cols = [0xff6fa5, 0xffd23a, 0xffffff, 0xb07cff, 0xff8a3a];
+      const vine = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.035, 6, 40), cosMat(0x3f8a33, 0.8)); vine.rotation.x = Math.PI / 2; vine.position.y = 0.55; g.add(vine);
+      for (let i = 0; i < 10; i++) {
+        const a = i / 10 * Math.PI * 2, f = new THREE.Group(); f.position.set(Math.cos(a) * 0.56, 0.6, Math.sin(a) * 0.56); f.lookAt(Math.cos(a) * 2, 1.2, Math.sin(a) * 2);
+        for (let k = 0; k < 5; k++) { const pt = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), cosMat(cols[i % 5], 0.6)); pt.scale.set(1, 0.5, 1.6); const b = k / 5 * Math.PI * 2; pt.position.set(Math.cos(b) * 0.06, Math.sin(b) * 0.06, 0); pt.rotation.z = b; f.add(pt); }
+        const c = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), cosMat(0xffc933, 0.5)); c.position.z = 0.02; f.add(c);
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), cosMat(0x4caf50, 0.7)); leaf.scale.set(0.5, 1.6, 0.3); leaf.position.set(0.08, -0.08, -0.02); f.add(leaf);
+        g.add(f);
+      }
+      return g; } },
+    { id: 'headphones', name: 'אוזניות', price: 35, icon: '🎧', slot: 'ears', dispY: 0.1, build: () => {
+      const g = new THREE.Group(), shell = cosGloss(0xe53935), dark = cosMat(0x1d1d1d, 0.7), metal = cosMat(0xcfd6dc, 0.25, 0.9);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.84, 0.05, 10, 32, Math.PI), shell); band.position.y = 0.06;
+      const pad = new THREE.Mesh(new THREE.TorusGeometry(0.84, 0.065, 8, 16, Math.PI / 3), dark); pad.position.y = 0.06; pad.rotation.z = Math.PI / 3;
+      [-1, 1].forEach(s => {
+        const slider = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.28, 0.06), metal); slider.position.set(s * 0.84, 0.12, 0); g.add(slider);
+        const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.15, 28), shell); cup.rotation.z = Math.PI / 2; cup.position.set(s * 0.86, 0, 0); g.add(cup);
+        const cushion = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.06, 10, 24), dark); cushion.rotation.y = Math.PI / 2; cushion.position.set(s * 0.78, 0, 0); g.add(cushion);
+        const cap = new THREE.Mesh(new THREE.CircleGeometry(0.13, 24), metal); cap.rotation.y = s * Math.PI / 2; cap.position.set(s * 0.94, 0, 0); g.add(cap);
+      });
+      g.add(band, pad); return g; } },
+    { id: 'halo', name: 'הילה', price: 70, icon: '😇', slot: 'halo', build: () => {
+      const g = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.045, 12, 40), new THREE.MeshStandardMaterial({ color: 0xfff2b0, emissive: 0xffd24a, emissiveIntensity: 1.2, roughness: 0.2, metalness: 0.4 }));
+      ring.rotation.x = Math.PI / 2; ring.position.y = 1.2;
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xffe28a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8 }));
+      glow.scale.set(1.3, 0.6, 1); glow.position.y = 1.2;
+      ring.onBeforeRender = () => { const t = performance.now() * 0.002; ring.position.y = 1.2 + Math.sin(t) * 0.04; glow.position.y = ring.position.y; };
+      g.add(ring, glow); return g; } },
+    { id: 'heartglasses', name: 'משקפי לב', price: 25, icon: '😍', slot: 'face', dispY: 0.05, build: () => {
+      const g = new THREE.Group(), frame = cosGloss(0xff3d7f);
+      const heart = new THREE.Shape(); heart.moveTo(0, -0.12); heart.bezierCurveTo(-0.24, 0.02, -0.12, 0.2, 0, 0.08); heart.bezierCurveTo(0.12, 0.2, 0.24, 0.02, 0, -0.12);
+      [-0.24, 0.17].forEach(x => {
+        const h = new THREE.Mesh(new THREE.ExtrudeGeometry(heart, { depth: 0.035, bevelEnabled: true, bevelSize: 0.012, bevelThickness: 0.012, bevelSegments: 2 }), frame); h.scale.setScalar(1.3); h.position.set(x, 0.1, -0.83); g.add(h);
+        const lens = new THREE.Mesh(new THREE.ShapeGeometry(heart), new THREE.MeshStandardMaterial({ color: 0xff9fc4, transparent: true, opacity: 0.55, roughness: 0.05 })); lens.scale.setScalar(1.05); lens.position.set(x, 0.12, -0.845); g.add(lens);
+      });
+      const br = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.18, 8), frame); br.rotation.z = Math.PI / 2; br.position.set(-0.035, 0.17, -0.82); g.add(br);
+      [-1, 1].forEach(s => { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.03, 0.6), frame); arm.position.set(-0.035 + s * 0.42, 0.18, -0.52); g.add(arm); });
+      return g; } },
+    { id: 'nerd', name: 'משקפיים עגולים', price: 15, icon: '🤓', slot: 'face', dispY: 0.05, build: () => {
+      const g = new THREE.Group(), m = cosTex('tortoise', 0x6b4226);
+      [-0.245, 0.175].forEach(x => { const r = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.028, 10, 32), m); r.position.set(x, 0.12, -0.8); g.add(r);
+        const lens = new THREE.Mesh(new THREE.CircleGeometry(0.14, 28), new THREE.MeshStandardMaterial({ color: 0xdff0ff, transparent: true, opacity: 0.3, roughness: 0.02, metalness: 0.2 })); lens.position.set(x, 0.12, -0.805); lens.rotation.y = Math.PI; g.add(lens); });
+      const br = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.018, 6, 12, Math.PI), m); br.position.set(-0.035, 0.14, -0.8); g.add(br);
+      [-1, 1].forEach(s => { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.03, 0.6), m); arm.position.set(-0.035 + s * 0.39, 0.14, -0.5); g.add(arm); });
+      return g; } },
+    { id: 'monocle', name: 'מונוקל', price: 30, icon: '🧐', slot: 'face', dispY: 0.05, build: () => {
+      const g = new THREE.Group(), gold = cosMat(0xffc933, 0.2, 0.9);
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.026, 10, 32), gold); r.position.set(0.175, 0.12, -0.81); g.add(r);
+      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.15, 28), new THREE.MeshStandardMaterial({ color: 0xe8f4ff, transparent: true, opacity: 0.3, roughness: 0.02 })); lens.position.set(0.175, 0.12, -0.815); lens.rotation.y = Math.PI; g.add(lens);
+      const curve = new THREE.CatmullRomCurve3([V3(0.3, 0.02, -0.8), V3(0.34, -0.25, -0.76), V3(0.26, -0.5, -0.66), V3(0.1, -0.62, -0.58)]);
+      g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.008, 5, false), gold));
+      return g; } },
+    { id: 'mustache', name: 'שפם', price: 15, icon: '🥸', slot: 'mouth', dispY: 0.2, build: () => {
+      const g = new THREE.Group(), m = cosMat(0x2a1a10, 0.85);
+      [-1, 1].forEach(s => {
+        const h = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 10), m); h.scale.set(1.8, 0.62, 0.7); h.position.set(s * 0.16, -0.22, -0.8); h.rotation.z = s * 0.22; g.add(h);
+        const curl = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.028, 8, 16, Math.PI * 1.4), m); curl.position.set(s * 0.36, -0.18, -0.77); curl.rotation.set(0, 0, s > 0 ? -0.5 : Math.PI + 0.5); g.add(curl);
+      });
+      return g; } },
+    { id: 'bowtie', name: 'פפיון', price: 20, icon: '🎀', slot: 'neck', dispY: 0.75, build: () => {
+      const g = new THREE.Group(), m = cosTex('dots', 0xd81b60);
+      [-1, 1].forEach(s => { const w = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 10), m); w.scale.set(1.2, 0.85, 0.45); w.position.set(s * 0.17, -0.82, -0.62); g.add(w); });
+      const knot = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 10), m); knot.scale.set(1, 1.2, 0.8); knot.position.set(0, -0.82, -0.66); g.add(knot);
+      return g; } },
+    { id: 'scarf', name: 'צעיף', price: 25, icon: '🧣', slot: 'neck', dispY: 0.75, build: () => {
+      const g = new THREE.Group(), m = cosTex('stripes', 0x2e9d5a);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.15, 12, 40), m); ring.rotation.x = Math.PI / 2; ring.position.y = -0.74; g.add(ring);
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.62, 0.07), m); tail.position.set(0.26, -1.06, -0.55); tail.rotation.z = 0.15; g.add(tail);
+      for (let i = 0; i < 6; i++) { const fr = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.08, 0.02), cosMat(0xf2efe6, 0.9)); fr.position.set(0.18 + i * 0.035, -1.4, -0.55); fr.rotation.z = 0.15; g.add(fr); }
+      return g; } },
+    { id: 'chain', name: 'שרשרת זהב', price: 55, icon: '📿', slot: 'neck', dispY: 0.75, build: () => {
+      const g = new THREE.Group(), gold = cosMat(0xffc933, 0.18, 0.95);
+      const n = 26, linkGeo = new THREE.TorusGeometry(0.05, 0.016, 6, 12);
+      for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2, l = new THREE.Mesh(linkGeo, gold); l.position.set(Math.cos(a) * 0.58, -0.8 - Math.max(0, -Math.sin(a)) * 0.2, Math.sin(a) * 0.58 * 0.95); l.rotation.set(Math.PI / 2, i % 2 ? Math.PI / 2 : 0, -a); g.add(l); }
+      const pend = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.035, 24), gold); pend.rotation.x = Math.PI / 2 - 0.3; pend.position.set(0, -1.12, -0.58); g.add(pend);
+      const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.05), new THREE.MeshStandardMaterial({ color: 0xff3b3b, roughness: 0.05, metalness: 0.2 })); star.position.set(0, -1.12, -0.61); g.add(star);
+      return g; } },
+    { id: 'balloon', name: 'בלון', price: 10, icon: '🎈', slot: 'hand', dispY: 0.05, build: () => {
+      const g = new THREE.Group();
+      const curve = new THREE.CatmullRomCurve3([V3(0, 0, 0), V3(0.05, 0.4, 0), V3(-0.04, 0.8, 0), V3(0, 1.1, 0)]);
+      g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 0.005, 4, false), cosMat(0xffffff, 0.8)));
+      const b = new THREE.Mesh(new THREE.SphereGeometry(0.28, 28, 20), cosGloss(0xff2e2e)); b.scale.set(1, 1.2, 1); b.position.y = 1.4; g.add(b);
+      const knot = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.07, 8), cosGloss(0xd61f1f)); knot.position.y = 1.1; g.add(knot);
+      b.onBeforeRender = () => { const t = performance.now() * 0.0015; b.position.x = Math.sin(t) * 0.04; b.rotation.z = Math.sin(t) * 0.08; };
+      return g; } },
+    { id: 'icecream', name: 'גלידה', price: 12, icon: '🍦', slot: 'hand', dispY: 0.12, build: () => {
+      const g = new THREE.Group();
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.34, 20), cosTex('waffle', 0xd9a45b)); cone.rotation.x = Math.PI; cone.position.y = 0.17; g.add(cone);
+      [[0xfff1d6, 0.38], [0xff8fb1, 0.53]].forEach(([c, y]) => { const s = new THREE.Mesh(new THREE.SphereGeometry(0.115, 18, 14), cosGloss(c)); s.position.y = y; g.add(s); });
+      const cols = [0xff3b3b, 0x3bb0ff, 0xffe03b, 0x6bdc4a, 0xffffff];
+      for (let i = 0; i < 16; i++) { const sp = new THREE.Mesh(new THREE.CapsuleGeometry ? new THREE.CylinderGeometry(0.008, 0.008, 0.035, 4) : new THREE.CylinderGeometry(0.008, 0.008, 0.035, 4), cosMat(cols[i % 5], 0.5)); const a = Math.random() * 6.28, e = Math.random() * 1.2; sp.position.set(Math.cos(a) * Math.sin(e) * 0.117, 0.53 + Math.cos(e) * 0.117, Math.sin(a) * Math.sin(e) * 0.117); sp.rotation.set(Math.random() * 3, Math.random() * 3, 0); g.add(sp); }
+      const cherry = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), cosGloss(0xd50000)); cherry.position.y = 0.67; g.add(cherry);
+      return g; } },
+    { id: 'wand', name: 'שרביט קסמים', price: 40, icon: '🪄', slot: 'hand', dispY: 0.1, build: () => {
+      const g = new THREE.Group();
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.6, 10), cosGloss(0x1a1a1a)); stick.position.y = 0.3; g.add(stick);
+      const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.021, 0.08, 10), cosMat(0xf5f5f5, 0.3)); tip.position.y = 0.56; g.add(tip);
+      const star5 = new THREE.Shape(); for (let i = 0; i < 10; i++) { const r = i % 2 ? 0.045 : 0.1, a = i / 10 * Math.PI * 2 + Math.PI / 2; const x = Math.cos(a) * r, y = Math.sin(a) * r; if (i === 0) star5.moveTo(x, y); else star5.lineTo(x, y); }
+      const star = new THREE.Mesh(new THREE.ExtrudeGeometry(star5, { depth: 0.03, bevelEnabled: true, bevelSize: 0.01, bevelThickness: 0.01, bevelSegments: 1 }), new THREE.MeshStandardMaterial({ color: 0xffe07a, emissive: 0xffc933, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.5 }));
+      star.position.set(0, 0.7, -0.015); g.add(star);
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xfff0a0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+      glow.scale.setScalar(0.35); glow.position.y = 0.7; g.add(glow);
+      star.onBeforeRender = () => { const t = performance.now() * 0.004; star.rotation.y = t * 0.5; glow.material.opacity = 0.55 + 0.35 * Math.sin(t * 2); };
+      return g; } },
+    // ---------- special items you can only get in the admin room ----------
+    { id: 'ownercrown', name: 'כתר הבעלים', price: 0, icon: '👑', exclusive: 'owner', build: () => {
+      const g = new THREE.Group(), gold = cosMat(0xffc933, 0.16, 0.95), velvet = cosTex('velvet', 0x9b1030);
+      const band = new THREE.Mesh(new THREE.LatheGeometry([[0.5, 0.56], [0.53, 0.62], [0.53, 0.78], [0.5, 0.84]].map(([x, y]) => new THREE.Vector2(x, y)), 48), gold);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.47, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), velvet); cap.scale.y = 0.75; cap.position.y = 0.72;
+      g.add(band, cap);
+      const gems = [0xff1744, 0x2979ff, 0x00e676, 0xffea00];
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * Math.PI * 2;
+        const spike = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.34, 16), gold); spike.position.set(Math.cos(a) * 0.5, 0.99, Math.sin(a) * 0.5); spike.rotation.set(Math.sin(a) * 0.15, 0, -Math.cos(a) * 0.15); g.add(spike);
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), gold); ball.position.set(Math.cos(a) * 0.53, 1.17, Math.sin(a) * 0.53); g.add(ball);
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.06), new THREE.MeshStandardMaterial({ color: gems[i % 4], emissive: gems[i % 4], emissiveIntensity: 0.5, roughness: 0.05, metalness: 0.3 }));
+        gem.position.set(Math.cos(a) * 0.54, 0.7, Math.sin(a) * 0.54); gem.scale.set(1, 1.3, 0.6); gem.lookAt(Math.cos(a) * 2, 0.7, Math.sin(a) * 2); g.add(gem);
+      }
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.09, 20, 14), gold); orb.position.y = 1.12; g.add(orb);
+      const cross = new THREE.Group(); cross.position.y = 1.3;
+      cross.add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.05), gold)); const bar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.05), gold); bar.position.y = 0.03; cross.add(bar); g.add(cross);
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xffd76a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.55 })); glow.scale.set(1.9, 1.1, 1); glow.position.y = 0.95; g.add(glow);
+      const sparks = [];
+      for (let i = 0; i < 6; i++) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xfff3b0, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true })); sp.scale.setScalar(0.12); g.add(sp); sparks.push(sp); }
+      orb.onBeforeRender = () => { const t = performance.now() * 0.001; sparks.forEach((sp, i) => { const a = t * 0.9 + i * 1.047; sp.position.set(Math.cos(a) * 0.72, 0.85 + Math.sin(t * 2 + i) * 0.15, Math.sin(a) * 0.72); sp.material.opacity = 0.5 + 0.5 * Math.sin(t * 4 + i * 2); }); glow.material.opacity = 0.45 + 0.15 * Math.sin(t * 2); };
+      return g; } },
+    { id: 'admintiara', name: 'נזר האדמין', price: 0, icon: '💎', exclusive: 'admin', build: () => {
+      const g = new THREE.Group(), silver = cosMat(0xdfe6ee, 0.14, 0.95);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.035, 12, 48), silver); ring.rotation.x = Math.PI / 2; ring.position.y = 0.6; g.add(ring);
+      // swooping front piece rising to the gem
+      const arc = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.03, 10, 32, Math.PI), silver); arc.position.set(0, 0.62, -0.5); arc.rotation.y = Math.PI; g.add(arc);
+      [-1, 1].forEach(s => { for (let k = 1; k <= 3; k++) { const a = Math.PI / 2 + s * k * 0.28; const sp = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.2 - k * 0.04, 12), silver); sp.position.set(Math.cos(a) * 0.55 * -1 * 0 + Math.cos(a) * 0.55, 0.7 - k * 0.02, -Math.sin(a) * 0.55); g.add(sp); } });
+      const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), new THREE.MeshPhysicalMaterial({ color: 0x2a8cff, emissive: 0x1565ff, emissiveIntensity: 0.9, roughness: 0.02, metalness: 0.1, clearcoat: 1 }));
+      gem.scale.set(0.8, 1.2, 0.6); gem.position.set(0, 0.84, -0.53); g.add(gem);
+      for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; if (Math.abs(Math.sin(a) + 1) < 0.3) continue; const d = new THREE.Mesh(new THREE.OctahedronGeometry(0.025), new THREE.MeshStandardMaterial({ color: 0xbfe3ff, emissive: 0x6fb6ff, emissiveIntensity: 0.6, roughness: 0.05 })); d.position.set(Math.cos(a) * 0.56, 0.62, Math.sin(a) * 0.56); g.add(d); }
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0x6fb6ff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.7 })); glow.scale.setScalar(0.5); glow.position.set(0, 0.84, -0.56); g.add(glow);
+      gem.onBeforeRender = () => { const t = performance.now() * 0.003; gem.rotation.y = t * 0.6; glow.material.opacity = 0.5 + 0.3 * Math.sin(t * 1.5); };
       return g; } }
   ];
   const ITEM_BY_ID = Object.fromEntries(SHOP_ITEMS.map(i => [i.id, i]));
-  function applyCosmetics(a, list, inMouth) {
+  function canWearItem(uid, id) {
+    const it = ITEM_BY_ID[id]; if (!it) return false;
+    if (it.exclusive === 'owner') return isOwnerUid(uid);
+    if (it.exclusive === 'admin') return !!uid && (isOwnerUid(uid) || adminIds.has(uid));
+    return true;
+  }
+  function applyCosmetics(a, list, inMouth, uid) {
     if (!a || !a.cosmetics) return;
-    const ids = (list || []).filter(id => ITEM_BY_ID[id]).sort();
+    const ids = (list || []).filter(id => ITEM_BY_ID[id] && (uid === undefined || canWearItem(uid, id))).sort();
     const key = ids.join(',') + (inMouth ? '|m' : '');
     if (key === a.wearKey) return;
     a.wearKey = key;
@@ -446,7 +731,7 @@
 
   // ---- Shop building you walk into ----
   const SHOP_POS = V3(10, 0, 12);             // center of the building
-  const SHOP_W = 10, SHOP_D = 8, SHOP_H = 4.5; // x size, z size, height
+  const SHOP_W = 14, SHOP_D = 11, SHOP_H = 4.8; // x size, z size, height (made bigger for all the new clothes)
   const shopDisplays = [];                    // clickable items on pedestals
   // ---- Mirror (real reflection, like a mirror in a real shop) ----
   const mirrorRT = new THREE.WebGLRenderTarget(512, 640);
@@ -555,21 +840,24 @@
     sign.position.set(x0 - 0.15, DOOR_H + 0.65, SHOP_POS.z); sign.rotation.y = -Math.PI / 2; scene.add(sign);
     // pedestals with the items, along the back wall
     const pedMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
-    const n = SHOP_ITEMS.length;
-    SHOP_ITEMS.forEach((it, i) => {
-      const z = z0 + (i + 1) * SHOP_D / (n + 1), x = x1 - 1.0;
+    // three rows of pedestals (the front row stops before the counter); price tags get higher toward the back
+    const ROWS = [{ x: x1 - 1.1, n: 10, za: z0 + 0.8, zb: z1 - 0.8, tagY: 2.6 }, { x: x1 - 2.9, n: 10, za: z0 + 0.8, zb: z1 - 0.8, tagY: 2.2 }, { x: x1 - 4.7, n: 8, za: z0 + 0.8, zb: SHOP_POS.z + 2.0, tagY: 1.8 }];
+    const slots = []; ROWS.forEach(r => { for (let k = 0; k < r.n; k++) slots.push({ x: r.x, z: r.n > 1 ? r.za + (r.zb - r.za) * k / (r.n - 1) : (r.za + r.zb) / 2, tagY: r.tagY }); });
+    SHOP_ITEMS.filter(it => !it.exclusive).forEach((it, i) => {
+      const sl = slots[i % slots.length], z = sl.z, x = sl.x;
+
       box(x, 0.45, z, 0.7, 0.9, 0.7, null, false);
       const pedCol = colliders[colliders.length - 1];
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.7), pedMat); ped.position.set(x, 0.45, z); scene.add(ped);
       const holder = new THREE.Group(); holder.position.set(x, 0.95, z); scene.add(holder);
       const disp = it.build(); disp.position.y = it.dispY !== undefined ? it.dispY : -0.55; disp.position.z = it.dispZ || 0; disp.scale.setScalar(0.7);
-      const spin = new THREE.Group(); spin.add(disp); spin.scale.setScalar(0.8); holder.add(spin);
+      const spin = new THREE.Group(); spin.add(disp); spin.scale.setScalar(0.78); holder.add(spin);
       // price tag
       const tcv = document.createElement('canvas'); tcv.width = 256; tcv.height = 128;
       const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.4), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(tcv), transparent: true }));
-      tag.position.set(x - 0.02, 1.95, z); tag.rotation.y = -Math.PI / 2; scene.add(tag);
+      tag.position.set(x - 0.02, sl.tagY, z); tag.rotation.y = -Math.PI / 2; scene.add(tag);
       // invisible click box around the item + pedestal
-      const hit = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshBasicMaterial({ visible: false }));
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(0.75, 1.8, 0.75), new THREE.MeshBasicMaterial({ visible: false }));
       hit.position.set(x, 0.9, z); scene.add(hit);
       shopDisplays.push({ it, spin, tag, tcv, hit, pedCol });
     });
@@ -920,6 +1208,15 @@
   }
   // "My tag" board: pick OWNER / ADMIN / none; only a tag you're allowed to wear can be picked
   function pressBadge(b) {
+    if (b.cosId) {
+      const it = ITEM_BY_ID[b.cosId];
+      if (!canWearItem(myUserId, it.id)) { toast(it.exclusive === 'owner' ? 'רק הבעלים יכול לשים את זה' : 'רק אדמינים', 2); tone(160, 0.15, 'square', 0.08); return; }
+      if (!shop.owned.includes(it.id)) shop.owned.push(it.id);
+      toggleWear(it); tone(880, 0.1, 'triangle', 0.12);
+      toast(shop.wearing.includes(it.id) ? 'לבשת ' + it.name : 'הורדת ' + it.name, 1.8);
+      badgeKey = '';
+      return;
+    }
     if (b.id !== 'NONE' && !tagAllowed(b.id, myUserId)) {
       tone(160, 0.15, 'square', 0.08);
       toast(b.id === 'OWNER' ? 'רק הבעלים יכול לבחור OWNER' : 'רק אדמינים יכולים לבחור ADMIN', 2);
@@ -933,10 +1230,11 @@
   let badgeKey = '';
   function refreshBadgeBoard() {
     const cur = myTagNow() || 'NONE';
-    if (cur === badgeKey) return;
-    badgeKey = cur;
+    const key = cur + '|' + badgeButtons.filter(b => b.cosId && shop.wearing.includes(b.cosId)).map(b => b.cosId).join();
+    if (key === badgeKey) return;
+    badgeKey = key;
     badgeButtons.forEach(b => {
-      const on = b.id === cur;
+      const on = b.cosId ? shop.wearing.includes(b.cosId) : b.id === cur;
       b.mesh.material.emissive.setHex(on ? b.color : 0x000000);
       b.mesh.material.emissiveIntensity = on ? 0.9 : 0;
       b.mesh.scale.setScalar(on ? 1.15 : 1);
@@ -1042,6 +1340,24 @@
         lab.position.z = 0.0105; m.add(lab);
         badgeBoard.add(m);
         badgeButtons.push({ mesh: m, id, color: col });
+      });
+      // special clothes: OWNER crown and ADMIN tiara, a button each under the board with the item floating in front of it
+      [['ownercrown', 'OWNER', 0x8b5a2b, -0.1], ['admintiara', 'ADMIN', 0xd8332a, 0.1]].forEach(([cosId, text, col, x]) => {
+        const it = ITEM_BY_ID[cosId];
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: 0x000000 }));
+        m.position.set(x, -0.25, 0.012);
+        const lcv = document.createElement('canvas'); lcv.width = 256; lcv.height = 128;
+        const lc = lcv.getContext('2d'); lc.fillStyle = '#ffffff'; lc.textAlign = 'center'; lc.textBaseline = 'middle';
+        const label = it.icon + ' ' + text;
+        let fsz = 80; lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif';
+        const tw = lc.measureText(label).width; if (tw > 224) { fsz = Math.floor(fsz * 224 / tw); lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif'; }
+        lc.fillText(label, 128, 68);
+        const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, depthWrite: false }));
+        lab.position.z = 0.0105; m.add(lab);
+        badgeBoard.add(m);
+        const prev = it.build(); prev.scale.setScalar(0.12); prev.position.set(x, -0.45, 0.12); badgeBoard.add(prev);
+        const spin = prev.children.find(c => c.isMesh); if (spin) { const ob = spin.onBeforeRender; spin.onBeforeRender = (...a) => { prev.rotation.y = performance.now() * 0.0008; if (ob) ob(...a); }; }
+        badgeButtons.push({ mesh: m, id: 'COS_' + cosId, cosId, color: col });
       });
       g.updateMatrixWorld(true);
     }
@@ -1436,9 +1752,11 @@
   rows.forEach(r => r.sort((a, b) => a.userData.part.loc[1] - b.userData.part.loc[1]));
   const LAYOUT = [
     [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['CLR', 'CLR'], ['SPC', 'SPC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['★', 'NOP'], ['DEL', 'DEL']],
-    [...'ABCDEFGH'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
-    [...'IJKLMNOPQ'].map(c => [c, c]),
-    [...'RSTUVWXYZ'].map(c => [c, c])
+    // letters in the same order as a real keyboard (QWERTY). This keyboard has 9 keys per row,
+    // so O and P sit at the end of the bottom row, and ENTER stays on its green key.
+    [...'QWERTYUI'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
+    [...'ASDFGHJKL'].map(c => [c, c]),
+    [...'ZXCVBNMOP'].map(c => [c, c])
   ];
   rows.forEach((r, ri) => r.forEach((m, i) => { const L = LAYOUT[ri][i]; if (L) makeKey(m, L[0], L[1]); }));
   // Colors for color mode: every letter key becomes a color
@@ -3155,7 +3473,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v34';
+  const GAME_VERSION = 'v35';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3376,7 +3694,7 @@
     if (!!pr.it !== o.it) setAvatarIt(o, !!pr.it);
     o.imm = !!pr.im;
     o.ready = true;
-    applyCosmetics(o, typeof pr.w === 'string' ? pr.w.split(',').slice(0, 6) : [], !!pr.lm);
+    applyCosmetics(o, typeof pr.w === 'string' ? pr.w.split(',').slice(0, 9) : [], !!pr.lm, o.uid || '');
     const hm = (typeof pr.hm === 'string' && HAMMER_LABEL[pr.hm]) ? pr.hm : '';
     if (hm !== (o.hmId || '')) {
       if (o.hammer) { scene.remove(o.hammer); o.hammer = null; }
@@ -3956,6 +4274,19 @@
       if (Math.abs(x) > SMOOTH_DEAD) turnApply(SMOOTH_RATE * x * dt);
     }
   }
+  // clothes test hooks
+  window.__clothesTest = {
+    items: () => SHOP_ITEMS.map(i => i.id), shopIds: () => shopDisplays.map(d => d.it.id),
+    can: (uid, id) => canWearItem(uid, id),
+    wear: id => { toggleWear(ITEM_BY_ID[id]); return shop.wearing.slice(); },
+    wearing: () => shop.wearing.slice(), setWearing: a => { shop.wearing = a.slice(); sendTimer = 0; return true; },
+    pressCos: id => { pressBadge(badgeButtons.find(b => b.cosId === id)); return shop.wearing.slice(); },
+    lit: () => { refreshBadgeBoard(); return badgeButtons.filter(b => b.mesh.material.emissive.getHex() !== 0).map(b => b.id); },
+    wornBy: uid => { const o = others.get(uid); return o ? o.wearKey : null; },
+    selfKey: () => selfAv ? selfAv.wearKey : null,
+    letters: () => kbKeys.map(m => m.userData.value).filter(v => /^[A-Z]$/.test(v)).join(''),
+    badgeBoard: () => badgeBoard
+  };
   // water park test hooks: put the player somewhere, read where they are, ask probe about a point
   window.__parkTest = {
     ramps: () => ramps.map(r => ({ ax: +r.ax.toFixed(2), ay: +r.ay.toFixed(2), az: +r.az.toFixed(2), ux: +r.ux.toFixed(2), uz: +r.uz.toFixed(2), len: +r.len.toFixed(2), slope: +r.slope.toFixed(3) })),
@@ -4199,7 +4530,7 @@
     });
     // First-person gorilla arms & hands
     ensureSelfAv();
-    { const k0 = selfAv.wearKey; applyCosmetics(selfAv, shop.wearing, lolliInMouth()); if (selfAv.wearKey !== k0) selfAv.root.traverse(o => o.layers.set(4)); selfAv.mouthCos.visible = false; }
+    { const k0 = selfAv.wearKey; applyCosmetics(selfAv, shop.wearing, lolliInMouth(), myUserId || ''); if (selfAv.wearKey !== k0) selfAv.root.traverse(o => o.layers.set(4)); selfAv.mouthCos.visible = false; }
     // lollipop: bring the left hand to your mouth to stick it there, do it again to take it back
     if (shop.wearing.includes('lollipop')) {
       camera.getWorldDirection(tmp);
@@ -4216,7 +4547,7 @@
         mirrorAv = makeAvatar(myColor, '', false, myStyle);
         mirrorAv.wearKey = null;
       }
-      applyCosmetics(mirrorAv, shop.wearing, lolliInMouth());
+      applyCosmetics(mirrorAv, shop.wearing, lolliInMouth(), myUserId || '');
       setAvatarTag(mirrorAv, myTagNow());
       mirrorAv.root.traverse(o => o.layers.set(5));
       if (mirrorAv.it !== myIt) setAvatarIt(mirrorAv, myIt);
@@ -4327,7 +4658,7 @@
         room.presence({
           h: r(headW), l: r(handPos[0]), r: r(handPos[1]),
           y: Math.round(Math.atan2(-tmp.x, -tmp.z) * 100) / 100,
-          it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0, t: myTagNow()
+          it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.filter(id => canWearItem(myUserId, id)).join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0, t: myTagNow()
         }).catch(() => {});
       }
     }
@@ -4465,9 +4796,13 @@
     } else shop.coins -= it.price;
     saveShop(); tagSound(); renderShop(); coinsChanged();
   }
+  const slotOf = it => it.slot || 'head';
   function toggleWear(it) {
     if (shop.wearing.includes(it.id)) shop.wearing = shop.wearing.filter(id => id !== it.id);
-    else shop.wearing.push(it.id);
+    else {
+      shop.wearing = shop.wearing.filter(id => { const o = ITEM_BY_ID[id]; return !o || slotOf(o) !== slotOf(it); });
+      shop.wearing.push(it.id);
+    }
     saveShop(); sendTimer = 0; renderShop();
   }
   // ---- Coins. Online (Firebase) they live on the server per uid: balance = granted (only the owner can change it)
