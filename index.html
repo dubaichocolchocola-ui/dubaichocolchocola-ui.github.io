@@ -197,10 +197,10 @@
     g.add(inner); return g;
   }
   const SHOP_ITEMS = [
-    { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
+    { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', dispY: -0.49, build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
     { id: 'lollipop', name: 'סוכרייה על מקל', price: 15, icon: '🍭', slot: 'hand', dispY: 0.12,
       build: () => fromCos('lollipop', 0.45, 0.25 * 0.45, inner => { inner.rotation.x = -0.35; }) },
-    { id: 'partyhat', name: 'כובע מסיבה', price: 10, icon: '🥳', build: () => {
+    { id: 'partyhat', name: 'כובע מסיבה', price: 10, icon: '🥳', dispY: -0.49, build: () => {
       const g = new THREE.Group();
       const cv = document.createElement('canvas'); cv.width = 64; cv.height = 64;
       const c = cv.getContext('2d'); for (let i = 0; i < 8; i++) { c.fillStyle = i % 2 ? '#ffd23f' : '#ff4f8b'; c.fillRect(0, i * 8, 64, 8); }
@@ -208,13 +208,13 @@
       cone.position.y = 0.6 + 0.47; cone.rotation.z = 0.12;
       const pom = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffffff }));
       pom.position.set(-0.06, 0.6 + 0.94, 0); g.add(cone, pom); return g; } },
-    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', build: () => {
+    { id: 'shades', name: 'משקפי שמש', price: 20, icon: '😎', dispY: -0.08, dispZ: 0.56, build: () => {
       const g = new THREE.Group();
       const m = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.4 });
       [-0.245, 0.175].forEach(x => { const l = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.05), m); l.position.set(x, 0.12, -0.8); g.add(l); });
       const br = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.04, 0.04), m); br.position.set(-0.035, 0.18, -0.8); g.add(br);
       return g; } },
-    { id: 'crown', name: 'כתר', price: 50, icon: '👑', build: () => {
+    { id: 'crown', name: 'כתר', price: 50, icon: '👑', dispY: -0.42, build: () => {
       const g = new THREE.Group();
       const m = new THREE.MeshStandardMaterial({ color: 0xffc933, roughness: 0.25, metalness: 0.8 });
       const band = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.2, 16, 1, true), m); band.material.side = THREE.DoubleSide; band.position.y = 0.66; g.add(band);
@@ -552,9 +552,10 @@
     SHOP_ITEMS.forEach((it, i) => {
       const z = z0 + (i + 1) * SHOP_D / (n + 1), x = x1 - 1.0;
       box(x, 0.45, z, 0.7, 0.9, 0.7, null, false);
+      const pedCol = colliders[colliders.length - 1];
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.7), pedMat); ped.position.set(x, 0.45, z); scene.add(ped);
       const holder = new THREE.Group(); holder.position.set(x, 0.95, z); scene.add(holder);
-      const disp = it.build(); disp.position.y = it.dispY !== undefined ? it.dispY : -0.55; disp.scale.setScalar(0.7);
+      const disp = it.build(); disp.position.y = it.dispY !== undefined ? it.dispY : -0.55; disp.position.z = it.dispZ || 0; disp.scale.setScalar(0.7);
       const spin = new THREE.Group(); spin.add(disp); spin.scale.setScalar(0.8); holder.add(spin);
       // price tag
       const tcv = document.createElement('canvas'); tcv.width = 256; tcv.height = 128;
@@ -563,7 +564,7 @@
       // invisible click box around the item + pedestal
       const hit = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshBasicMaterial({ visible: false }));
       hit.position.set(x, 0.9, z); scene.add(hit);
-      shopDisplays.push({ it, spin, tag, tcv, hit });
+      shopDisplays.push({ it, spin, tag, tcv, hit, pedCol });
     });
     // mirror on the side wall, facing into the shop
     const frame = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.1, 0.08), trimMat);
@@ -677,6 +678,7 @@
   }
   // ---- Wardrobe console (built by the player): scroll through the clothes you bought ----
   const wardrobeButtons = [];
+  let wardCollider = null; // the wardrobe console body (hands aren't stopped by it next to its buttons)
   let wardIdx = 0, wardPreview = null, wardPreviewId = '', wardLabelCv = null, wardLabelTex = null, wardKey = '';
   {
     const WD = JSON.parse(document.getElementById('wardData').textContent);
@@ -695,7 +697,7 @@
       m.position.fromArray(p.pivot); g.add(m); parts[p.name] = m;
     });
     g.updateMatrixWorld(true);
-    if (parts['Cube']) { const bb = new THREE.Box3().setFromObject(parts['Cube']); colliders.push({ min: bb.min.clone(), max: bb.max.clone() }); }
+    if (parts['Cube']) { const bb = new THREE.Box3().setFromObject(parts['Cube']); wardCollider = { min: bb.min.clone(), max: bb.max.clone() }; colliders.push(wardCollider); }
     const sym = (txt, col) => {
       const cv = document.createElement('canvas'); cv.width = cv.height = 64;
       const c = cv.getContext('2d'); c.fillStyle = col; c.font = '900 44px Arial, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(txt, 32, 35);
@@ -1341,7 +1343,17 @@
     return kbZone;
   }
   const _kbb = new THREE.Box3();
-  const handProbeSkip = p => (deskCollider && keyboardZone().containsPoint(p) ? deskCollider : null);
+  // Colliders a HAND ignores at p (feet/body/head still collide with everything): the desk over the keyboard, the
+  // wardrobe console next to its buttons, and a pedestal next to its item. Otherwise the hand's HAND_R sphere plants on
+  // them before it reaches the key/button/item (measured: 3.5 cm short on the wardrobe from above, 7.7 cm on the crown).
+  const HAND_ZONE_PAD = 0.25, _hz = new THREE.Box3(), _hzSkip = new Set();
+  function handProbeSkip(p) {
+    _hzSkip.clear();
+    if (deskCollider && keyboardZone().containsPoint(p)) _hzSkip.add(deskCollider);
+    if (wardCollider && wardrobeButtons.some(b => _hz.setFromObject(b.mesh).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
+    for (const d of shopDisplays) if (d.pedCol && _hz.setFromObject(d.spin).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(d.pedCol);
+    return _hzSkip.size ? _hzSkip : null;
+  }
   // Live measurement for the wrist panel and window.__kbDebug: the hand closest to any key, its nearest key, the
   // distance, and how far the hand is above (+) / below (-) the touch height and off to the side of the key.
   const kbDebug = { near: false, key: '', dist: 0, dy: 0, side: 0, hand: '', touching: false, normalY: 0 };
@@ -1510,8 +1522,8 @@
   // Every in-world button is pressed with the REAL hand position (handWorld), never the locomotion-locked handPos.
   // A button fires when a hand arrives at it (not while it rests there), each button has its own cooldown, and
   // each hand only presses the NEAREST button in range (keys are closer together than the press radius).
-  const ADMIN_PRESS_R = 0.14, ADMIN_COOL = 0.8, WARD_PRESS_R = 0.12, WARD_COOL = 0.3;
-  const SHOP_PRESS_R = 0.35, SHOP_COOL = 0.8, PLANE_COOL = 0.4;
+  const ADMIN_PRESS_R = 0.14, ADMIN_COOL = 0.8;
+  const PLANE_COOL = 0.4;
   const vrPress = new Map(), vrCool = new Map();
   const _vc = V3(), _vl = V3(), _vbox = new THREE.Box3();
   function vrPressTick(dt) { vrCool.forEach((c, k) => { if (c > 0) vrCool.set(k, c - dt); }); }
@@ -1568,11 +1580,29 @@
     }, PLANE_COOL);
     if (t && uv && fn(uv) !== false) buzz(t.h.pad, 0.25, 20);
   }
-  const shopCenter = (d, out) => out.set(d.hit.position.x, 1.25, d.hit.position.z); // the item standing on the pedestal
+  // Wardrobe buttons and shop items: the REAL hand position (handWorld, t.hw) entering the object's Box3 (grown by
+  // BOX_PAD). Fires once when a hand enters an object (staying inside doesn't repeat), with a per-object cooldown.
+  const BOX_PAD = 0.04, BOX_COOL = 0.5, _pb = new THREE.Box3();
+  function vrPressBoxes(group, pts, items, boxOf) {
+    const fired = [];
+    for (const t of pts) {
+      const hp = t.hw || t.p, sk = group + '|' + t.h.side;
+      let st = vrPress.get(sk);
+      if (!st) vrPress.set(sk, st = { cur: null });
+      const inside = items.find(it => boxOf(it, _pb).expandByScalar(BOX_PAD).containsPoint(hp)) || null;
+      if (inside === st.cur) continue;           // still in the same object (or still in none)
+      st.cur = inside;
+      if (!inside || (vrCool.get(inside) || 0) > 0) continue;
+      vrCool.set(inside, BOX_COOL);
+      fired.push({ item: inside, t });
+    }
+    return fired;
+  }
+  const boxCenter = (o, out) => _pb.setFromObject(o).getCenter(out);
   function updateVRButtons(pts) {
     for (const f of vrPressNearest('admin', pts, adminButtons, (b, o) => meshCenter(b.mesh, o), ADMIN_PRESS_R, ADMIN_COOL)) { vrActions.admin(f.item); buzz(f.t.h.pad, 0.3, 30); }
-    for (const f of vrPressNearest('ward', pts, wardrobeButtons, (b, o) => meshCenter(b.mesh, o), WARD_PRESS_R, WARD_COOL)) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
-    for (const f of vrPressNearest('shop', pts, shopDisplays, shopCenter, SHOP_PRESS_R, SHOP_COOL)) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.4, 30); }
+    for (const f of vrPressBoxes('ward', pts, wardrobeButtons, (b, box) => box.setFromObject(b.mesh))) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
+    for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => box.setFromObject(d.spin))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
     boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
     if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv));
   }
@@ -1673,6 +1703,46 @@
         });
         updateKeyAids(null);
       } else ok('first-person penguin exists for the wing test', false);
+      // wardrobe buttons + shop items: can a real hand (probe with HAND_R, planted at the first surface it touches)
+      // actually get into the object's padded box, coming from in front of it?
+      {
+        const reach = (box, center, dir, lift) => {
+          const from = center.clone().addScaledVector(dir, 0.8).add(V3(0, lift, 0)), to = center.clone();
+          const cur = V3(), len = from.distanceTo(to);
+          for (let s = 0; s <= len; s += 0.005) {
+            cur.lerpVectors(from, to, s / len);
+            if (box.containsPoint(cur)) return 'in';
+            const hit = probe(cur, HAND_R, handProbeSkip(cur));
+            if (hit) { const hc = colliders.find(c => cur.x >= c.min.x - HAND_R && cur.x <= c.max.x + HAND_R && cur.y >= c.min.y - HAND_R && cur.y <= c.max.y + HAND_R && cur.z >= c.min.z - HAND_R && cur.z <= c.max.z + HAND_R); return 'stopped ' + (box.distanceToPoint(cur) * 100).toFixed(1) + ' cm short on [' + (hc ? hc.min.toArray().map(v => v.toFixed(2)) + ' .. ' + hc.max.toArray().map(v => v.toFixed(2)) : '?') + '] at ' + cur.toArray().map(v => v.toFixed(2)); }
+          }
+          return 'missed';
+        };
+        const wardRes = wardrobeButtons.map(b => {
+          const box = new THREE.Box3().setFromObject(b.mesh).expandByScalar(BOX_PAD), c = box.getCenter(V3());
+          const lab = b.mesh.children[0], front = V3(0, 0, 1).applyQuaternion(lab.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
+          return b.act + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
+        });
+        ok('wardrobe buttons reachable by the real hand', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
+        const shopRes = shopDisplays.map(d => {
+          const box = new THREE.Box3().setFromObject(d.spin).expandByScalar(BOX_PAD), c = box.getCenter(V3());
+          const front = V3(SHOP_POS.x - c.x, 0, SHOP_POS.z - c.z).normalize();
+          return d.it.name + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
+        });
+        ok('shop items reachable by the real hand', shopRes.every(s => !/stopped|missed/.test(s)), shopRes.join(' | '));
+        // every item sits on top of its pedestal and stays over it while it spins (8 angles)
+        const seat = shopDisplays.map(d => {
+          const r0 = d.spin.rotation.y; let lowest = Infinity, farthest = 0;
+          for (let k = 0; k < 8; k++) {
+            d.spin.rotation.y = k / 8 * Math.PI * 2; d.spin.updateMatrixWorld(true);
+            const b = new THREE.Box3().setFromObject(d.spin), c = b.getCenter(V3());
+            lowest = Math.min(lowest, b.min.y - d.pedCol.max.y);
+            farthest = Math.max(farthest, Math.hypot(c.x - (d.pedCol.min.x + d.pedCol.max.x) / 2, c.z - (d.pedCol.min.z + d.pedCol.max.z) / 2));
+          }
+          d.spin.rotation.y = r0; d.spin.updateMatrixWorld(true);
+          return { name: d.it.name, ok: lowest >= -0.01 && farthest < 0.2, txt: d.it.name + ': ' + (lowest * 100).toFixed(1) + ' cm above top, centre ≤' + (farthest * 100).toFixed(1) + ' cm off' };
+        });
+        ok('shop items sit on their pedestals', seat.every(s => s.ok), seat.map(s => s.txt).join(' | '));
+      }
       // shop mirror: render it from a camera standing in front of it and read the pixels back
       {
         mirror.updateMatrixWorld();
@@ -1730,7 +1800,19 @@
     Object.assign(kbDebug, { near: true, key: 'L', dist: 0.042, dy: 0.018, side: 0.038, hand: 'right', touching: false });
     wristKey = ''; drawWrist(1, true); const wristImg = wristCv.toDataURL('image/png');
     Object.assign(kbDebug, savedKb); wristKey = '';
-    return { results: out, monitor, board, wrist: wristImg };
+    let shopImg = '';
+    try {
+      const W = 640, H = 400, rt = new THREE.WebGLRenderTarget(W, H), cam = new THREE.PerspectiveCamera(60, W / H, 0.05, 100);
+      const ps = shopDisplays.map(d => d.hit.position), mid = ps.reduce((a, p) => a.add(p), V3()).divideScalar(ps.length);
+      cam.position.set(mid.x - 3.2, 1.6, mid.z); cam.lookAt(mid.x, 1.0, mid.z); cam.updateMatrixWorld();
+      const xrOn = renderer.xr.enabled, old = renderer.getRenderTarget(); renderer.xr.enabled = false;
+      renderer.setRenderTarget(rt); renderer.render(scene, cam); renderer.setRenderTarget(old); renderer.xr.enabled = xrOn;
+      const px = new Uint8Array(W * H * 4); renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const cx = cv.getContext('2d'), img = cx.createImageData(W, H);
+      for (let y = 0; y < H; y++) img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+      cx.putImageData(img, 0, 0); shopImg = cv.toDataURL('image/png'); rt.dispose();
+    } catch (e) { shopImg = ''; }
+    return { results: out, monitor, board, wrist: wristImg, shop: shopImg };
   };
   // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
   // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
@@ -1780,8 +1862,8 @@
         results.push({ kind: 'keyL', label: 'small wiggle on L = one press', ok: rec.length === 1, fired: rec.map(r => r.a[0].userData.value).join(','), repeats: 0, again: 0 });
       }
       adminButtons.forEach(b => check('admin', b.door ? (b.take ? 'door open' : 'door close') : `${b.id} ${b.take ? 'take' : 'return'}`, meshCenter(b.mesh, V3()), r => r.k === 'admin' && r.a[0] === b));
-      wardrobeButtons.forEach(b => check('wardrobe', b.act, meshCenter(b.mesh, V3()), r => r.k === 'wardrobe' && r.a[0] === b));
-      shopDisplays.forEach(d => check('shop', d.it.name, shopCenter(d, V3()), r => r.k === 'shop' && r.a[0] === d));
+      wardrobeButtons.forEach(b => check('wardrobe', b.act, boxCenter(b.mesh, V3()), r => r.k === 'wardrobe' && r.a[0] === b));
+      shopDisplays.forEach(d => check('shop', d.it.name, boxCenter(d.spin, V3()), r => r.k === 'shop' && r.a[0] === d));
       // board: the mute button of row 1 on each side; the uv handed to boardClick must land on that button
       boardPlanes.forEach((pl, i) => {
         const w = pl.geometry.parameters.width, hh = pl.geometry.parameters.height;
@@ -1814,7 +1896,7 @@
     const adm = isAdmin();
     for (const c of colliders) {
       if (c.admin && adm) continue; // admin-only door: solid for everyone else
-      if (skip && c === skip) continue;
+      if (skip && (skip === c || (skip instanceof Set && skip.has(c)))) continue;
       if (p.x < c.min.x - r || p.x > c.max.x + r || p.y < c.min.y - r || p.y > c.max.y + r || p.z < c.min.z - r || p.z > c.max.z + r) continue;
       const pens = [
         [p.x - (c.min.x - r), V3(-1, 0, 0), c.min.x - r, 'x'],
@@ -2272,7 +2354,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v18';
+  const GAME_VERSION = 'v19';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2884,7 +2966,7 @@
     // Button presses (keys, buttons, wrist) and the yellow dot use the END OF THE WING you see (flipperTip, after the
     // pose and stretch above), so you press exactly where you aim with the wing. The wing is posed to handPos, which is
     // the real hand (handWorld) whenever the hand isn't planted on a surface; the desk over the keyboard never plants it.
-    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: pressPointOf(h), h })) : null;
+    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: pressPointOf(h), hw: handWorld(h, V3()), h })) : null;
     vrPressTick(dt);
     updateKeyboard(dt, pressPts);
     if (pressPts) updateVRButtons(pressPts);
