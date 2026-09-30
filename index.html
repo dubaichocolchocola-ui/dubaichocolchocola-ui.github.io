@@ -1026,6 +1026,7 @@
     return sp;
   }
   const TAG_ABOVE = 0.66; // above the head (the name label is at ~0.45)
+  const SPEAK_ABOVE_TAG = 0.92, SPEAK_ABOVE_NAME = 0.7; // the speaking sign: above the tag, or above the name
   function setAvatarTag(a, t) {
     t = TAG_COLORS[t] ? t : '';
     if ((a.tagText || '') === t) return;
@@ -1631,7 +1632,7 @@
   function drawPlayerList() {
     const list = [{ name: myName, color: myColor, it: myIt, me: true, uid: myIdUid() }];
     others.forEach((o, peer) => { if (o.ready) list.push({ name: o.name, color: o.color, it: o.it, me: false, peer, uid: o.uid }); });
-    const key = roomCode + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
+    const key = roomCode + '|' + isAdmin() + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : '') + (voice.mutedAll.has(p.uid) ? 'V' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
     if (key === lastListKey) return;
     lastListKey = key;
     boardList = list.slice(0, 10);
@@ -1642,7 +1643,7 @@
       c.fillStyle = bg; c.beginPath();
       if (c.roundRect) c.roundRect(x0, y - 13, x1 - x0, 26, 7); else c.rect(x0, y - 13, x1 - x0, 26);
       c.fill();
-      c.fillStyle = fg; c.textAlign = 'center'; c.font = '700 15px Rubik, sans-serif';
+      c.fillStyle = fg; c.textAlign = 'center'; fitFont(c, label, 15, x1 - x0 - 8, 'Rubik, sans-serif'); // shrink long labels to fit
       c.fillText(label, (x0 + x1) / 2, y + 1);
     };
     boardList.forEach((p, i) => {
@@ -1662,7 +1663,10 @@
       c.direction = 'rtl';
       if (!p.me) {
         btn(BTN_MUTE[0], BTN_MUTE[1], y, muted ? 'בטל השתקה' : 'השתק', muted ? '#ffcf4a' : 'rgba(255,255,255,0.18)', muted ? '#2a1a05' : '#fff');
-        btn(BTN_REP[0], BTN_REP[1], y, reported ? 'דווח ✓' : 'דווח', reported ? 'rgba(255,255,255,0.1)' : '#c0503a', '#fff');
+        if (isAdmin() && !isOwnerUid(p.uid)) {
+          const all = voice.mutedAll.has(p.uid); // admins: silence this player for everyone instead of "report"
+          btn(BTN_REP[0], BTN_REP[1], y, all ? 'בטל לכולם' : 'השתק לכולם', all ? '#ffcf4a' : '#8a2a2a', all ? '#2a1a05' : '#fff');
+        } else btn(BTN_REP[0], BTN_REP[1], y, reported ? 'דווח ✓' : 'דווח', reported ? 'rgba(255,255,255,0.1)' : '#c0503a', '#fff');
       }
     });
     if (list.length > 10) { c.textAlign = 'center'; c.fillStyle = '#fff'; c.font = '700 18px Rubik, sans-serif'; c.fillText('ועוד ' + (list.length - 10) + '…', 224, 500); }
@@ -1674,6 +1678,7 @@
     const p = boardList[i];
     if (!p || p.me || Math.abs(py - (ROW_Y0 + i * ROW_H)) > 14) return false;
     if (px >= BTN_MUTE[0] && px <= BTN_MUTE[1]) { toggleMute(p.peer); return true; }
+    if (px >= BTN_REP[0] && px <= BTN_REP[1] && isAdmin() && !isOwnerUid(p.uid)) { toggleVoiceMuteAll(p.uid); return true; }
     if (px >= BTN_REP[0] && px <= BTN_REP[1]) {
       // the report form is an HTML dialog, which can't be seen in VR: don't open an invisible, stuck dialog there
       if (vr) { tone(160, 0.15, 'square', 0.08); return true; }
@@ -1688,7 +1693,7 @@
     if (o) o.label.visible = !mutedPeers.has(peer);
     tone(500, 0.06, 'triangle', 0.08);
     const n = o ? o.name : 'השחקן';
-    toast(mutedPeers.has(peer) ? `השתקת את ${n}` : `ביטלת השתקה ל${n}`, 2);
+    toast(mutedPeers.has(peer) ? `השתקת את ${n}` : `ביטלת השתקה ל${n}`, 2); // label + voice (voiceFrame)
     lastListKey = '';
   }
 
@@ -1742,6 +1747,7 @@
     shop: d => { tone(880, 0.08, 'triangle', 0.1); shopClick(d); },
     board: uv => boardClick(uv, true),
     ban: uv => banBoardClick(uv),
+    mic: right => { toggleMyMic(); buzz(right.pad, 0.4, 30); },
     calibrate: (left, right) => { startCalibration(); tone(520, 0.08, 'triangle', 0.1); buzz(right.pad, 0.6, 40); buzz(left.pad, 0.6, 40); }
   };
   function planePress(pl, pts, fn) {
@@ -2123,7 +2129,18 @@
     rawUpdate: (path, v) => firebase.database().ref(path).update(v).then(() => 'ok', e => 'DENIED ' + (e.code || e.message)),
     idOfMe: () => idOf(myUserId),
     wristImage: () => { wristKey = ''; drawWrist(1, true); return wristCv.toDataURL('image/png'); },
-    monitorImage: () => { drawMonitor(); return monCv.toDataURL('image/png'); }
+    monitorImage: () => { drawMonitor(); return monCv.toDataURL('image/png'); },
+    voiceStart: () => { voiceStart(); return 'ok'; },
+    voice: () => JSON.stringify({ active: voice.active, mic: voice.micState, micOn: voiceMicOn(), selfMuted: voice.selfMuted, mutedAll: [...voice.mutedAll],
+      peers: [...voice.peers.values()].map(p => ({ uid: p.uid, init: p.initiator, state: p.pc.connectionState, audio: !!p.nodes,
+        inLevel: p.nodes ? Math.round(rms(p.nodes.an, p.nodes.buf) * 1e4) / 1e4 : 0, outLevel: p.nodes ? Math.round(rms(p.nodes.outAn, p.nodes.buf) * 1e4) / 1e4 : 0,
+        speaking: !!(others.get(p.uid) && others.get(p.uid).speakSprite && others.get(p.uid).speakSprite.visible) })) }),
+    toggleMic: () => { toggleMyMic(); return voiceMicOn(); },
+    muteForMe: uid => { toggleMute(uid); return mutedPeers.has(uid); },
+    muteForAll: uid => toggleVoiceMuteAll(uid),
+    moveOther: (uid, x, z) => { const o = others.get(uid); if (o) { o.head.position.set(x, 1.2, z); o.tH.set(x, 1.2, z); } },
+    listener: () => JSON.stringify(camera.getWorldPosition(V3()).toArray()),
+    listenAt: (x, z) => { rig.position.set(x, 0, z); camera.position.set(0, 1.2, 0); camera.rotation.set(0, 0, 0); camera.updateMatrixWorld(true); }
   };
   window.__roomMsgTest = async () => {
     const out = [], imgs = {};
@@ -2450,6 +2467,7 @@
     a.flame.position.copy(a.body.position);
     a.label.position.set(h.x, h.y + 0.45, h.z);
     if (a.tagSprite) a.tagSprite.position.set(h.x, h.y + TAG_ABOVE, h.z);
+    if (a.speakSprite) a.speakSprite.position.set(h.x, h.y + (a.tagSprite ? SPEAK_ABOVE_TAG : SPEAK_ABOVE_NAME), h.z);
     a.model.updateMatrixWorld(true);
     _pInv.copy(a.model.matrixWorld).invert();
     a.flippers.forEach(f => {
@@ -2613,6 +2631,7 @@
     a.hl.rotation.y = a.hr.rotation.y = yaw;
     a.label.position.set(h.x, h.y + 0.42, h.z);
     if (a.tagSprite) a.tagSprite.position.set(h.x, h.y + TAG_ABOVE, h.z);
+    if (a.speakSprite) a.speakSprite.position.set(h.x, h.y + (a.tagSprite ? SPEAK_ABOVE_TAG : SPEAK_ABOVE_NAME), h.z);
     [[l, -1], [r, 1]].forEach(([hand, s], i) => {
       _sh.set(s * 0.29 * a.torso.scale.x, 0.2 * a.torso.scale.x, 0.02).applyAxisAngle(UP, yaw).add(a.torso.position);
       _dir.subVectors(hand, _sh);
@@ -2689,12 +2708,13 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v25';
+  const GAME_VERSION = 'v26';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
-  const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
+  const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
   const calBtnLocal = V3(((CAL_BTN.x + CAL_BTN.w / 2) / WCV_W - 0.5) * WRIST_W, (0.5 - (CAL_BTN.y + CAL_BTN.h / 2) / WCV_H) * WRIST_H, 0);
   const calBtnHalf = { x: CAL_BTN.w / WCV_W * WRIST_W / 2, y: CAL_BTN.h / WCV_H * WRIST_H / 2 };
+  const micBtnLocal = V3(((MIC_BTN.x + MIC_BTN.w / 2) / WCV_W - 0.5) * WRIST_W, (0.5 - (MIC_BTN.y + MIC_BTN.h / 2) / WCV_H) * WRIST_H, 0);
   const wristCv = document.createElement('canvas');
   wristCv.width = WCV_W; wristCv.height = WCV_H;
   const wristTex = new THREE.CanvasTexture(wristCv);
@@ -2713,13 +2733,30 @@
     calBtnHover = rp.some(t => onBtn(t.p, 0.01) && Math.abs(local(t.p).z) < 0.08);
     const t = vrPressCheck('calib', rp, (p, inside) => onBtn(p, 0.01) && Math.abs(local(p).z) < (inside ? 0.06 : 0.03), 0.8);
     if (t && calibT < 0) vrActions.calibrate(left, right);
+    // my microphone on/off (same size as the calibrate button)
+    const mlocal = p => wrist.worldToLocal(_wl.copy(p)).sub(micBtnLocal);
+    const onMic = p => { const l = mlocal(p); return Math.abs(l.x) < calBtnHalf.x + 0.01 && Math.abs(l.y) < calBtnHalf.y + 0.01; };
+    const tm = vrPressCheck('mic', rp, (p, inside) => onMic(p) && Math.abs(mlocal(p).z) < (inside ? 0.06 : 0.03), 0.6);
+    if (tm) vrActions.mic(right);
+  }
+  function toggleMyMic() {
+    if (voice.micState === 'denied' || voice.micState === 'off') { voice.selfMuted = false; getMic(); }
+    else voice.selfMuted = !voice.selfMuted;
+    applyMicEnabled(); tone(voice.selfMuted ? 300 : 700, 0.08, 'triangle', 0.1);
+  }
+  function micLabel() {
+    if (!voice.active) return ['🎤 אין קול', '#6b6b6b'];
+    if (voice.mutedAll.has(myUserId)) return ['🔇 אדמין השתיק', '#8a2a2a'];
+    if (voice.micState === 'asking') return ['🎤 מאשר…', '#6b6b6b'];
+    if (voice.micState !== 'on') return ['🎤 אין הרשאה', '#6b6b6b'];
+    return voice.selfMuted ? ['🔇 מושתק', '#c0503a'] : ['🎤 פתוח', '#3f9a2f'];
   }
   function drawWrist(players, solo) {
     const calibrating = calibT >= 0;
     const kbLine = kbDebug.near
       ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
       : '';
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}`;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2730,8 +2767,14 @@
     c.fillStyle = calibrating ? '#7ed957' : calBtnHover ? '#ffe58a' : '#ffcf4a';
     c.beginPath(); if (c.roundRect) c.roundRect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h, 35); else c.rect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h); c.fill();
     c.fillStyle = '#2a1a05'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.font = `900 36px ${F}`;
-    c.fillText(calibrating ? 'עמוד ישר… מכייל' : 'כיול גובה', CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y + CAL_BTN.h / 2 + 2);
+    const calTxt = calibrating ? 'עמוד ישר… מכייל' : 'כיול גובה';
+    fitFont(c, calTxt, 34, CAL_BTN.w - 24, F); c.font = c.font.replace('700', '900');
+    c.fillText(calTxt, CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y + CAL_BTN.h / 2 + 2);
+    // my microphone button
+    const [micTxt, micCol] = micLabel();
+    c.fillStyle = micCol; c.beginPath(); if (c.roundRect) c.roundRect(MIC_BTN.x, MIC_BTN.y, MIC_BTN.w, MIC_BTN.h, 35); else c.rect(MIC_BTN.x, MIC_BTN.y, MIC_BTN.w, MIC_BTN.h); c.fill();
+    c.fillStyle = '#ffffff'; fitFont(c, micTxt, 32, MIC_BTN.w - 24, F); c.font = c.font.replace('700', '900');
+    c.fillText(micTxt, MIC_BTN.x + MIC_BTN.w / 2, MIC_BTN.y + MIC_BTN.h / 2 + 2);
     c.fillStyle = '#fff'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `900 62px ${F}`;
     c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 58);
@@ -3043,7 +3086,179 @@
       transaction: (path, fn) => fdb.ref(path).transaction(fn),
       TS
     };
-    return { uid, lobby: lobbyRoom, db: dbApi };
+    return { uid, lobby: lobbyRoom, db: dbApi, fdb, serverNow: () => Date.now() + off, TS };
+  }
+  // ================= Voice chat: WebRTC between the players in your room, spatial (louder when close) =================
+  // Signaling (who connects to whom) goes through Firebase at rtc/<to>/<from>; the audio itself goes straight between
+  // the headsets (peer to peer), so it doesn't use Firebase's quota. Firebase mode only (the site / Quest app).
+  const VOICE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  const SPEAK_LEVEL = 0.012, VOICE_RETRY_MS = 9000;
+  const voice = { active: false, micTrack: null, micState: 'off', selfMuted: false, peers: new Map(), inbox: null, mutedAll: new Set() };
+  let voiceFb = null;
+  const vrnd = () => Math.random().toString(36).slice(2, 10);
+  function voiceMicOn() { return !!voice.micTrack && voice.micTrack.enabled; }
+  function applyMicEnabled() {
+    if (voice.micTrack) voice.micTrack.enabled = !voice.selfMuted && !voice.mutedAll.has(myUserId);
+    wristKey = '';
+  }
+  async function getMic() {
+    if (voice.micTrack || voice.micState === 'asking' || !navigator.mediaDevices) return;
+    voice.micState = 'asking'; wristKey = '';
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      voice.micTrack = s.getAudioTracks()[0]; voice.micState = 'on';
+      applyMicEnabled();
+      voice.peers.forEach(p => { if (p.tr) p.tr.sender.replaceTrack(voice.micTrack).catch(() => {}); });
+    } catch (e) { voice.micState = 'denied'; }
+    wristKey = '';
+  }
+  async function voiceStart() {
+    if (voice.active || !voiceFb || !myUserId) return;
+    voice.active = true;
+    initAudio();
+    const inbox = voiceFb.fdb.ref('rtc/' + myUserId);
+    await inbox.remove().catch(() => {});
+    inbox.onDisconnect().remove().catch(() => {});
+    const f = s => voiceInbox(s.key, s.val());
+    inbox.on('child_added', f); inbox.on('child_changed', f);
+    voice.inbox = { ref: inbox, f };
+    getMic();
+  }
+  function voiceStop() {
+    if (!voice.active) return;
+    voice.active = false;
+    [...voice.peers.keys()].forEach(closePeer);
+    if (voice.inbox) { voice.inbox.ref.off('child_added', voice.inbox.f); voice.inbox.ref.off('child_changed', voice.inbox.f); voice.inbox.ref.remove().catch(() => {}); voice.inbox = null; }
+    if (voice.micTrack) { voice.micTrack.stop(); voice.micTrack = null; voice.micState = 'off'; }
+    wristKey = '';
+  }
+  function makePeer(uid, initiator) {
+    const pc = new RTCPeerConnection({ iceServers: VOICE_ICE });
+    // the caller makes the audio line; the answerer uses the one its offer creates (see voiceInbox)
+    const tr = initiator ? pc.addTransceiver('audio', { direction: 'sendrecv' }) : null;
+    if (tr && voice.micTrack) tr.sender.replaceTrack(voice.micTrack).catch(() => {});
+    const out = voiceFb.fdb.ref('rtc/' + uid + '/' + myUserId); // my messages to this player
+    out.onDisconnect().remove().catch(() => {});
+    const p = { uid, pc, tr, out, initiator, sid: initiator ? vrnd() : null, iceQ: [], seenIce: new Set(), createdAt: Date.now(), level: 0, nodes: null };
+    pc.onicecandidate = e => { if (e.candidate && p.sid) out.child('ice').push({ c: JSON.stringify(e.candidate), sid: p.sid }).catch(() => {}); };
+    pc.ontrack = e => attachVoice(p, e.streams[0] || new MediaStream([e.track]));
+    voice.peers.set(uid, p);
+    return p;
+  }
+  async function offerTo(uid) {
+    const p = makePeer(uid, true);
+    try {
+      const o = await p.pc.createOffer(); await p.pc.setLocalDescription(o);
+      await p.out.set({ desc: { type: 'offer', sdp: o.sdp, sid: p.sid, ts: voiceFb.TS } });
+    } catch (e) {}
+  }
+  function closePeer(uid) {
+    const p = voice.peers.get(uid); if (!p) return;
+    voice.peers.delete(uid);
+    try { p.pc.close(); } catch (e) {}
+    if (p.nodes) { try { p.nodes.src.disconnect(); p.nodes.g.disconnect(); } catch (e) {} p.nodes.el.srcObject = null; }
+    p.out.remove().catch(() => {});
+    const o = others.get(uid); if (o) setSpeaking(o, false);
+  }
+  async function voiceInbox(from, v) {
+    if (!voice.active || !v) return;
+    const d = v.desc;
+    let p = voice.peers.get(from);
+    try {
+      if (d && d.type === 'offer' && (!p || p.sid !== d.sid)) {
+        // a new call from this player (the player with the smaller uid always calls): answer it
+        closePeer(from); p = makePeer(from, false); p.sid = d.sid;
+        await p.pc.setRemoteDescription({ type: 'offer', sdp: d.sdp });
+        p.tr = p.pc.getTransceivers()[0]; p.tr.direction = 'sendrecv'; // send my mic on the offer's audio line
+        if (voice.micTrack) await p.tr.sender.replaceTrack(voice.micTrack).catch(() => {});
+        const a = await p.pc.createAnswer(); await p.pc.setLocalDescription(a);
+        await p.out.set({ desc: { type: 'answer', sdp: a.sdp, sid: d.sid, ts: voiceFb.TS } });
+      } else if (d && d.type === 'answer' && p && p.initiator && p.sid === d.sid && p.pc.signalingState === 'have-local-offer') {
+        await p.pc.setRemoteDescription({ type: 'answer', sdp: d.sdp });
+      }
+      p = voice.peers.get(from);
+      if (p && v.ice) for (const k in v.ice) {
+        const c = v.ice[k]; if (p.seenIce.has(k) || !c || c.sid !== p.sid) continue;
+        p.seenIce.add(k); p.iceQ.push(JSON.parse(c.c));
+      }
+      if (p && p.pc.remoteDescription) while (p.iceQ.length) await p.pc.addIceCandidate(p.iceQ.shift()).catch(() => {});
+    } catch (e) {}
+  }
+  // spatial playback: remote voice -> (level meter) -> 3D panner at the player's head -> mute gain -> speakers
+  function attachVoice(p, stream) {
+    if (p.nodes || !ac) return;
+    const el = new Audio(); el.srcObject = stream; el.muted = true; el.play().catch(() => {}); // Chrome needs a (muted) element to pump remote audio into Web Audio
+    const src = ac.createMediaStreamSource(stream);
+    const an = ac.createAnalyser(); an.fftSize = 512;
+    const pan = ac.createPanner();
+    pan.panningModel = 'HRTF'; pan.distanceModel = 'inverse'; pan.refDistance = 1.2; pan.maxDistance = 40; pan.rolloffFactor = 1.4;
+    const g = ac.createGain();
+    const outAn = ac.createAnalyser(); outAn.fftSize = 512; // what you actually hear (tests / debugging)
+    src.connect(an); src.connect(pan); pan.connect(g); g.connect(ac.destination); g.connect(outAn);
+    p.nodes = { el, src, an, pan, g, outAn, buf: new Float32Array(512) };
+  }
+  const rms = (an, buf) => { an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; return Math.sqrt(s / buf.length); };
+  const setPos = (node, prefix, x, y, z) => {
+    if (node[prefix + 'X']) { node[prefix + 'X'].value = x; node[prefix + 'Y'].value = y; node[prefix + 'Z'].value = z; }
+    else if (prefix === 'position') node.setPosition(x, y, z);
+  };
+  const _vlp = V3(), _vld = V3(), _vlu = V3();
+  function voiceFrame() {
+    if (!voice.active || !ac) return;
+    // the listener is my head
+    camera.getWorldPosition(_vlp); camera.getWorldDirection(_vld); _vlu.set(0, 1, 0).applyQuaternion(camera.getWorldQuaternion(_vq));
+    const L = ac.listener;
+    if (L.positionX) { L.positionX.value = _vlp.x; L.positionY.value = _vlp.y; L.positionZ.value = _vlp.z;
+      L.forwardX.value = _vld.x; L.forwardY.value = _vld.y; L.forwardZ.value = _vld.z; L.upX.value = _vlu.x; L.upY.value = _vlu.y; L.upZ.value = _vlu.z; }
+    else { L.setPosition(_vlp.x, _vlp.y, _vlp.z); L.setOrientation(_vld.x, _vld.y, _vld.z, _vlu.x, _vlu.y, _vlu.z); }
+    voice.peers.forEach(p => {
+      const o = others.get(p.uid); if (!p.nodes || !o) return;
+      setPos(p.nodes.pan, 'position', o.head.position.x, o.head.position.y, o.head.position.z);
+      const silenced = mutedPeers.has(p.uid) || voice.mutedAll.has(p.uid);
+      p.nodes.g.gain.value = silenced ? 0 : 1;
+      p.level = Math.max(rms(p.nodes.an, p.nodes.buf), p.level * 0.85);
+      setSpeaking(o, !silenced && p.level > SPEAK_LEVEL);
+    });
+  }
+  const _vq = new THREE.Quaternion();
+  // who to talk to: everyone in my room; the smaller uid calls, and retries while the call isn't up
+  function voiceSync() {
+    if (!voice.active) return;
+    const want = new Set([...others.values()].filter(o => o.ready && o.uid && o.peer === o.uid).map(o => o.uid));
+    voice.peers.forEach((p, uid) => { if (!want.has(uid)) closePeer(uid); });
+    want.forEach(uid => {
+      const p = voice.peers.get(uid), st = p && p.pc.connectionState;
+      if (myUserId < uid) {
+        if (!p) offerTo(uid);
+        else if (st !== 'connected' && Date.now() - p.createdAt > VOICE_RETRY_MS) { closePeer(uid); offerTo(uid); }
+      } else if (p && (st === 'failed' || st === 'closed')) closePeer(uid);
+    });
+  }
+  setInterval(voiceSync, 1000);
+  // a small speaker sign over the head of whoever is talking
+  let speakTex = null;
+  function setSpeaking(o, on) {
+    if (!on && !o.speakSprite) return;
+    if (!o.speakSprite) {
+      if (!speakTex) {
+        const cv = document.createElement('canvas'); cv.width = cv.height = 128; const c = cv.getContext('2d');
+        c.fillStyle = 'rgba(20,40,20,0.85)'; c.beginPath(); c.arc(64, 64, 60, 0, Math.PI * 2); c.fill();
+        c.lineWidth = 6; c.strokeStyle = '#ffffff'; c.stroke();
+        c.font = '72px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('🔊', 64, 70);
+        speakTex = new THREE.CanvasTexture(cv);
+      }
+      o.speakSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: speakTex, depthWrite: false }));
+      o.speakSprite.scale.set(0.2, 0.2, 1); o.root.add(o.speakSprite);
+      o.speakSprite.position.copy(o.head.position).add(V3(0, o.tagSprite ? SPEAK_ABOVE_TAG : SPEAK_ABOVE_NAME, 0));
+    }
+    o.speakSprite.visible = on;
+  }
+  // admin: silence a player for everyone (voiceMutes/<uid>; the server lets only admins write it)
+  function toggleVoiceMuteAll(uid) {
+    if (!isAdmin() || !db || isOwnerUid(uid)) { tone(160, 0.15, 'square', 0.08); return; }
+    const muted = voice.mutedAll.has(uid);
+    (muted ? db.collection('voiceMutes').doc(uid).delete() : db.collection('voiceMutes').doc(uid).set({ by: myUserId, at: Date.now() }))
+      .then(() => tone(muted ? 700 : 300, 0.1, 'triangle', 0.1)).catch(() => tone(160, 0.15, 'square', 0.08));
   }
   async function switchRoom(code) {
     if (!lobby) return false;
@@ -3085,7 +3300,7 @@
       if (ON_CLAUDE) lobby = await window.claude.use('room');
       else {
         const fb = await firebaseBackend();
-        myUserId = fb.uid; db = fb.db; lobby = fb.lobby;
+        myUserId = fb.uid; db = fb.db; lobby = fb.lobby; voiceFb = fb;
         listenDb();
         startCoinSync();
         // register my ID -> uid, so the owner can make me an admin by my ID
@@ -3218,6 +3433,7 @@
     updateDecor(dt);
     const inVR = renderer.xr.isPresenting;
     const active = inVR || deskMode;
+    voiceFrame(); // voice positions / volumes / speaking signs (runs whenever voice is on)
     if (inVR) {
       // The per-eye XR cameras don't copy the user camera's layers, so the first-person body layer is enabled on them directly
       const xc = renderer.xr.getCamera();
@@ -3775,6 +3991,9 @@
   $('repCancel').addEventListener('click', closeReport);
   // live admin list + bans (from claude.ai's database, or from Firebase once signed in)
   function listenDb() {
+      if (db) db.collection('voiceMutes').onSnapshot(snap => {
+        voice.mutedAll = new Set(snap.docs.map(d => d.id)); applyMicEnabled(); lastListKey = '';
+      }, () => {});
       if (db) db.collection('admins').onSnapshot(snap => {
         adminIds.clear(); snap.docs.forEach(d => adminIds.add(d.id));
       }, () => {});
@@ -3931,6 +4150,7 @@
       window.__inVR = true;
       session.addEventListener('end', () => { window.__inVR = false; });
       startCalibration();
+      if (!ON_CLAUDE) { voiceStart(); session.addEventListener('end', voiceStop); } // voice chat while in VR
       $('vrBig').hidden = true;
       $('kickMsg').hidden = true; // back in the game: an old kick message is done
       $('overlay').classList.add('hidden');
