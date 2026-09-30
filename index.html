@@ -2260,6 +2260,7 @@
       return JSON.stringify(out);
     },
     toggleMic: () => { toggleMyMic(); return voiceMicOn(); },
+    voiceDiag: () => { vdiagAt = 0; return JSON.stringify(voiceDiag()); },
     muteForMe: uid => { toggleMute(uid); return mutedPeers.has(uid); },
     muteForAll: uid => toggleVoiceMuteAll(uid),
     moveOther: (uid, x, z) => { const o = others.get(uid); if (o) { o.head.position.set(x, 1.2, z); o.tH.set(x, 1.2, z); } },
@@ -2857,7 +2858,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v30';
+  const GAME_VERSION = 'v31';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -2901,11 +2902,11 @@
     return voice.selfMuted ? ['🔇 מושתק', '#c0503a'] : ['🎤 פתוח', '#3f9a2f'];
   }
   function drawWrist(players, solo) {
-    const calibrating = calibT >= 0;
+    const calibrating = calibT >= 0, vd = voiceDiag();
     const kbLine = kbDebug.near
       ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
       : '';
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}|${Date.now() < hammerMsgUntil ? hammerMsg : ''}`;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}|${Date.now() < hammerMsgUntil ? hammerMsg : ''}|${JSON.stringify(vd)}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2949,8 +2950,20 @@
       c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 168);
     }
     // Version + arm length, so it's obvious in the headset which build is running
-    c.font = `700 28px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
-    c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH} · height ${view.position.y >= 0 ? '+' : ''}${view.position.y.toFixed(2)}m`, 256, 220);
+    c.font = `700 24px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
+    c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH} · height ${view.position.y >= 0 ? '+' : ''}${view.position.y.toFixed(2)}m`, 256, 200);
+    // voice check: MIC: OK / DENIED / NONE, my level bar, voice connections (connected / failed / connecting)
+    {
+      const d = vd, micCol = d.mic === 'OK' ? '#7ed957' : d.mic === 'DENIED' ? '#ff6a4a' : '#bbbbbb';
+      c.textAlign = 'left'; c.font = `700 19px ${F}`; c.fillStyle = micCol;
+      c.fillText('MIC: ' + d.mic, 30, 228);
+      const bx = 30 + c.measureText('MIC: ' + d.mic).width + 10, bw = Math.max(40, 242 - bx); // the bar starts after the text
+      c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(bx, 221, bw, 14);
+      c.fillStyle = d.lvl >= 8 ? '#ffcf4a' : '#7ed957'; c.fillRect(bx, 221, bw * d.lvl / 10, 14);
+      const vt = 'VOICE: ' + d.ok + ' connected' + (d.bad ? ' · ' + d.bad + ' failed' : '') + (d.wait ? ' · ' + d.wait + ' connecting' : '');
+      c.fillStyle = d.bad ? '#ff8a70' : d.ok ? '#c8f5b0' : '#bbbbbb'; fitFont(c, vt, 19, 230, F);
+      c.fillText(vt, 252, 228); c.textAlign = 'center';
+    }
     wristTex.needsUpdate = true;
   }
 
@@ -3252,6 +3265,18 @@
   const voice = { active: false, micTrack: null, micState: 'off', selfMuted: false, peers: new Map(), inbox: null, mutedAll: new Set(), restarts: 0 };
   let voiceFb = null;
   const vrnd = () => Math.random().toString(36).slice(2, 10);
+  // wrist check line: mic permission, my level (0..10), and the voice connections by state
+  let vdiag = { mic: 'NONE', lvl: 0, ok: 0, bad: 0, wait: 0 }, vdiagAt = 0;
+  function voiceDiag() {
+    const now = performance.now(); if (now - vdiagAt < 100) return vdiag; vdiagAt = now;
+    const mic = voice.micState === 'on' ? 'OK' : voice.micState === 'denied' ? 'DENIED' : voice.micState === 'asking' ? 'ASKING' : 'NONE';
+    let lvl = 0;
+    if (voice.micAn && voiceMicOn()) lvl = Math.min(10, Math.round(rms(voice.micAn, voice.micBuf) * 60)); // ~0.17 rms = full
+    let ok = 0, bad = 0, wait = 0;
+    voice.peers.forEach(p => { const s = p.pc.connectionState; if (s === 'connected') ok++; else if (s === 'failed' || s === 'closed') bad++; else wait++; });
+    vdiag = { mic, lvl, ok, bad, wait };
+    return vdiag;
+  }
   function voiceMicOn() { return !!voice.micTrack && voice.micTrack.enabled; }
   function applyMicEnabled() {
     if (voice.micTrack) voice.micTrack.enabled = !voice.selfMuted && !voice.mutedAll.has(myUserId);
@@ -3263,6 +3288,7 @@
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       voice.micTrack = s.getAudioTracks()[0]; voice.micState = 'on';
+      if (ac) { voice.micAn = ac.createAnalyser(); voice.micAn.fftSize = 512; ac.createMediaStreamSource(s).connect(voice.micAn); voice.micBuf = new Float32Array(512); }
       applyMicEnabled();
       voice.peers.forEach(p => { if (p.tr) p.tr.sender.replaceTrack(voice.micTrack).catch(() => {}); });
     } catch (e) { voice.micState = 'denied'; }
