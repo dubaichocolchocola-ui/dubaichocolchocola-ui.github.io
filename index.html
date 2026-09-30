@@ -1808,7 +1808,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v11';
+  const GAME_VERSION = 'v12';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2099,6 +2099,41 @@
     // hands jump with the offset: drop any grip so the jump isn't turned into a fling
     hands.forEach(h => { h.touch = false; h.cooldown = 0.1; });
     history = []; wasTouching = false;
+    prevHeadOK = false; // the head jump from a new offset isn't movement: don't sweep across it
+  }
+
+  // ---- VR body collision helpers ----
+  const HEAD_R = 0.16, SWEEP_STEP = 0.04, SWEEP_MAX = 1.5; // SWEEP_MAX: longer = teleport/respawn, not swept
+  const CHEST_DOWN = 0.45, CHEST_R = 0.2;
+  const prevHead = V3(), _swA = V3(), _swB = V3(), _swS = V3(), _swR = V3();
+  let prevHeadOK = false;
+  // Walks from -> to in SWEEP_STEP steps. At the first sample that penetrates something, the head is pushed back out
+  // there and velocity into the surface is stopped; the rest of the motion keeps only its sliding (along-the-wall)
+  // part and is swept again, so walls still stop you but wall-running along them keeps working.
+  // Returns the corrected end point (a scratch vector), or null if nothing was hit.
+  function sweepHead(from, to) {
+    const a = _swA.copy(from), b = _swB.copy(to);
+    let hit = false;
+    for (let iter = 0; iter < 3; iter++) {
+      const d = a.distanceTo(b);
+      if (d < 1e-4) break;
+      const steps = Math.ceil(d / SWEEP_STEP);
+      let h = null;
+      for (let i = 1; i <= steps; i++) {
+        _swS.lerpVectors(a, b, i / steps);
+        const p = probe(_swS, HEAD_R);
+        if (p && p.depth > 0.002) { h = p; break; }
+      }
+      if (!h) break;
+      hit = true;
+      const n = h.normal;
+      _swR.copy(b).sub(_swS);                              // motion left after the hit
+      _swR.addScaledVector(n, -Math.min(0, _swR.dot(n)));  // keep only the sliding part
+      a.copy(_swS).addScaledVector(n, h.depth);            // pushed back out at the hit
+      b.copy(a).add(_swR);
+      vel.addScaledVector(n, -Math.min(0, vel.dot(n)));
+    }
+    return hit ? b : null;
   }
   // Upward-only correction after the window: if the head stays CALIB_RAISE above the measured height for
   // CALIB_RAISE_TIME (player was sitting/bending when calibration ran, then stood up), that becomes the height.
@@ -2265,8 +2300,22 @@
         if (Math.abs(bh.normal.y) < 0.5) { wallNormal.copy(bh.normal); wallTimer = 0.35; }
         if (bh.normal.y > 0.5) onGround = true;
       }
+    } else {
+      // VR chest: walls only, so walking in the real room can't push the body through a wall under the head
+      headW.copy(rig.position).add(view.position).add(camera.position);
+      const chest = tmp.copy(headW); chest.y -= CHEST_DOWN;
+      const ch = probe(chest, CHEST_R);
+      if (ch && Math.abs(ch.normal.y) < 0.5) {
+        rig.position.addScaledVector(ch.normal, ch.depth);
+        vel.addScaledVector(ch.normal, -Math.min(0, vel.dot(ch.normal)));
+      }
     }
     headW.copy(rig.position).add(view.position).add(camera.position);
+    // VR: sweep the head from last frame's position so fast flings / real-room steps can't tunnel through thin walls
+    if (inVR && prevHeadOK && prevHead.distanceTo(headW) <= SWEEP_MAX) {
+      const end = sweepHead(prevHead, headW);
+      if (end) { rig.position.add(end.sub(headW)); headW.copy(rig.position).add(view.position).add(camera.position); }
+    }
     const hb = probe(headW, 0.16);
     if (hb) {
       rig.position.addScaledVector(hb.normal, hb.depth);
@@ -2279,6 +2328,7 @@
     if (rig.position.y < -1.5 || rig.position.y > 80) { rig.position.copy(spawnPoint()); vel.set(0, 0, 0); }
 
     headW.copy(rig.position).add(view.position).add(camera.position);
+    prevHead.copy(headW); prevHeadOK = inVR;
     if (inVR) {
       handPos = hands.map(h => h.touch ? h.anchor.clone() : handWorld(h, V3()));
     } else {
