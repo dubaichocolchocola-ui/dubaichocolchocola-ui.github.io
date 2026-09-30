@@ -850,7 +850,12 @@
       const pedCol = colliders[colliders.length - 1];
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.7), pedMat); ped.position.set(x, 0.45, z); scene.add(ped);
       const holder = new THREE.Group(); holder.position.set(x, 0.95, z); scene.add(holder);
-      const disp = it.build(); disp.position.y = it.dispY !== undefined ? it.dispY : -0.55; disp.position.z = it.dispZ || 0; disp.scale.setScalar(0.7);
+      // every item sits on its pedestal by its own shape: measured (solid parts only, not glows), centred over the
+      // pedestal and its bottom put on the pedestal top (items are built where they sit on the penguin, not here)
+      const disp = it.build(); disp.scale.setScalar(0.7); disp.updateMatrixWorld(true);
+      const db = new THREE.Box3(), pb = new THREE.Box3();
+      disp.traverse(o => { if (!o.isMesh) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); db.union(pb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld)); });
+      if (!db.isEmpty()) { const dc = db.getCenter(V3()); disp.position.set(-dc.x, -db.min.y, -dc.z); }
       const spin = new THREE.Group(); spin.add(disp); spin.scale.setScalar(0.78); holder.add(spin);
       // price tag
       const tcv = document.createElement('canvas'); tcv.width = 256; tcv.height = 128;
@@ -1934,10 +1939,10 @@
       u.press = Math.max(0, u.press - dt);
       m.position.y = u.baseY - (u.press > 0 ? 0.012 : 0);
     }
-    // VR: real hand positions (handWorld); each hand presses its nearest key within KB_PRESS_R
+    // VR: real hand positions (handWorld); each hand presses the key its wing tip is on (see kbKeyAt)
     if (handPoints) {
       measureKeyboard(handPoints);
-      for (const f of vrPressNearest('key', handPoints, kbKeys, kbTouchPoint, KB_PRESS_R, 0, KB_RELEASE_R)) { vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15); }
+      for (const f of kbPress(handPoints)) { vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15); }
     } else kbDebug.near = false;
     updateKeyAids(handPoints);
   }
@@ -1945,6 +1950,43 @@
   // press it again). Distance is measured to where a hand touching that key actually is: a hand on the desk is held
   // HAND_R above the desk top by the locomotion, ~9 cm above the key centres.
   const KB_PRESS_R = 0.07, KB_RELEASE_R = 0.16; // release: the hand has to come 16 cm off the key to press it again
+  // With the full keyboard the rows are ~11 cm apart, so "within 7 cm of a key's top" also caught the key in front
+  // when reaching over it (at 45° the wing tip passed 3.2 cm from CLR on the way to L). A key is now pressed like a
+  // real one: the wing tip is over the key (its top face + KB_MARGIN around) and at most KB_ABOVE above its top
+  // (down to KB_BELOW into it). Over two keys at once (margins), the one whose middle is closer wins.
+  const KB_MARGIN = 0.01, KB_ABOVE = 0.03, KB_BELOW = 0.06;
+  const _kl = new THREE.Vector3();
+  function kbKeyAt(p) {
+    let best = null, bd = Infinity;
+    for (const m of kbKeys) {
+      const u = m.userData;
+      if (!u.pressInv) { // at rest, once (the press animation moves the key down a little)
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        m.updateWorldMatrix(true, false); u.pressInv = m.matrixWorld.clone().invert(); u.pressS = m.getWorldScale(V3()).x;
+      }
+      const l = _kl.copy(p).applyMatrix4(u.pressInv), b = m.geometry.boundingBox, s = u.pressS;
+      const dy = (l.y - b.max.y) * s; if (dy > KB_ABOVE || dy < -KB_BELOW) continue;
+      const ox = Math.max(0, b.min.x - l.x, l.x - b.max.x) * s, oz = Math.max(0, b.min.z - l.z, l.z - b.max.z) * s;
+      if (ox > KB_MARGIN || oz > KB_MARGIN) continue;
+      const d = Math.hypot(l.x - (b.min.x + b.max.x) / 2, l.z - (b.min.z + b.max.z) / 2) * s;
+      if (d < bd) { bd = d; best = m; }
+    }
+    return best;
+  }
+  // each hand presses once per touch: after a press it has to come KB_RELEASE_R off that key before it presses again
+  function kbPress(pts) {
+    const fired = [];
+    for (const t of pts) {
+      const sk = 'key|' + t.h.side;
+      let st = vrPress.get(sk);
+      if (!st) vrPress.set(sk, st = { cur: null });
+      if (st.cur) { if (t.p.distanceTo(kbTouchPoint(st.cur, _vc)) < KB_RELEASE_R) continue; st.cur = null; }
+      const k = kbKeyAt(t.p);
+      if (!k) continue;
+      st.cur = k; fired.push({ item: k, t });
+    }
+    return fired;
+  }
   // Hands and the keyboard: the hand's HAND_R (10 cm) collision sphere touches the desk top before the hand reaches a
   // key, and a touching hand is planted (pushing it just moves the body). Reaching in at 45° it planted ~9 cm short of
   // the key, at 20° ~25 cm short, so keys couldn't be pressed. Over the keyboard area the desk is therefore not solid
@@ -2295,15 +2337,18 @@
       // the body moves so the hand stays on the anchor) and see where it stops relative to the key's touch point.
       const kL = key('L'), pL = kbTouchPoint(kL, V3()), deskTop = deskCollider.max.y;
       ensureSelfAv();
-      const approach = (label, from) => {
-        // move the WING TIP (the press point) 5 cm into the key, solving at each step for the hand position that puts
+      // depth: how far into the key the tip is aimed (5 cm: pushing it in). firstOnly: also require that the first key
+      // the tip would press on the way is L (fair only when aiming at the top: aimed 5 cm into L at 45° the tip passes
+      // 1.3 cm over the back edge of the key in front, which a real finger would brush too)
+      const approach = (label, from, depth = 0.05, firstOnly = false) => {
+        // move the WING TIP (the press point) into the key, solving at each step for the hand position that puts
         // the posed tip there; the hand (probe with HAND_R) plants at its first surface hit
-        const target = pL.clone().add(V3(0, -0.05, 0));
+        const target = pL.clone().add(V3(0, -depth, 0));
         const P = V3(), dir = target.clone().sub(from), len = dir.length(); dir.normalize();
         const head = pL.clone().addScaledVector(toKey, -0.55); head.y = HEAD_GAME_Y; // player standing at the desk
         const yaw = Math.atan2(-toKey.x, -toKey.z), side = V3(toKey.z, 0, -toKey.x);
         const restL = head.clone().addScaledVector(side, -0.3).add(V3(0, -0.6, 0));
-        let stopped = null, bestD = Infinity, bestKey = null, cur = null;
+        let stopped = null, bestD = Infinity, bestKey = null, cur = null, firstKey = null, maxErr = 0, firstAt = null, reachedL = false;
         for (let s = 0; s <= len && !stopped; s += 0.005) {
           P.copy(from).addScaledVector(dir, s);
           cur = cur || P.clone();
@@ -2314,15 +2359,22 @@
           if (hit) { stopped = hit; break; }
           let nk = null, nd = Infinity; kbKeys.forEach(m => { const d = tip.distanceTo(kbTouchPoint(m, _vc)); if (d < nd) { nd = d; nk = m; } });
           if (nd < bestD) { bestD = nd; bestKey = nk; }
+          if (!firstKey) { firstKey = kbKeyAt(tip); if (firstKey) firstAt = tip.clone(); }
+          maxErr = Math.max(maxErr, tip.distanceTo(P));
+          if (kbKeyAt(tip) === kL) reachedL = true;
         }
-        ok('reach L ' + label + ': closest ' + (bestD * 100).toFixed(1) + ' cm, nearest key ' + (bestKey ? bestKey.userData.value : '-'),
-          bestD <= KB_PRESS_R && bestKey === kL, (stopped ? 'hand planted on a surface, normal ' + stopped.normal.toArray().join(',') : 'hand not planted') + ' (wing tip moved)');
+        ok('reach L ' + label + ': ' + (stopped ? 'hand stopped' : 'hand not stopped') + ', tip ' + (reachedL ? 'reaches' : 'does NOT reach') + ' L' + (firstOnly ? ', first key pressed ' + (firstKey ? firstKey.userData.value : '-') : ''),
+          !stopped && reachedL && (!firstOnly || firstKey === kL), (stopped ? 'hand planted on a surface, normal ' + stopped.normal.toArray().join(',') : 'hand not planted') + ' (wing tip moved), tip off the line by up to ' + (maxErr * 100).toFixed(1) + ' cm' + (firstAt && firstKey !== kL ? '; pressed at ' + firstAt.toArray().map(v => v.toFixed(3)) + ', L top ' + pL.toArray().map(v => v.toFixed(3)) + ', ' + firstKey.userData.value + ' top ' + kbTouchPoint(firstKey, V3()).toArray().map(v => v.toFixed(3)) + ', start ' + from.toArray().map(v => v.toFixed(3)) : ''));
       };
       // from where a player stands in front of the computer, reaching forward and down with the hand
-      const pcFront = V3(COMPUTER.x, 0, COMPUTER.z), toKey = kL.getWorldPosition(V3()).sub(pcFront).setY(0).normalize();
-      approach('from straight above', pL.clone().add(V3(0, 0.5, 0)));
+      // the player stands in front of the keyboard and reaches across the rows (from the Z row toward the digits),
+      // wherever L is along its row
+      const rowMid = vs => vs.reduce((a, v) => a.add(key(v).getWorldPosition(V3())), V3()).divideScalar(vs.length);
+      const toKey = rowMid(['1', '0']).sub(rowMid(['Z', 'DEL'])).setY(0).normalize();
+      approach('from straight above', pL.clone().add(V3(0, 0.5, 0)), 0.05, true);
       approach('from the player at 45°', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.45).add(V3(0, 0.45, 0)));
       approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
+      approach('from the player at 45°, aimed at the top of L', pL.clone().addScaledVector(toKey, -0.4).add(V3(0, 0.4, 0)), 0, true);
       // press point = the end of the wing you see: pose the first-person penguin toward hand targets, then compare the
       // press point with the wing end measured independently from the posed wing's world vertices
       ensureSelfAv();
@@ -2410,7 +2462,10 @@
           const r0 = d.spin.rotation.y; let lowest = Infinity, farthest = 0;
           for (let k = 0; k < 8; k++) {
             d.spin.rotation.y = k / 8 * Math.PI * 2; d.spin.updateMatrixWorld(true);
-            const b = objBox(d.spin, new THREE.Box3()), c = b.getCenter(V3());
+            // solid parts only: a glow (sprite) is light around the item, it may dip into the pedestal
+            const b = new THREE.Box3(), pb = new THREE.Box3();
+            d.spin.traverse(o => { if (!o.isMesh) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); b.union(pb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld)); });
+            const c = b.getCenter(V3());
             lowest = Math.min(lowest, b.min.y - d.pedCol.max.y);
             farthest = Math.max(farthest, Math.hypot(c.x - (d.pedCol.min.x + d.pedCol.max.x) / 2, c.z - (d.pedCol.min.z + d.pedCol.max.z) / 2));
           }
@@ -2471,8 +2526,8 @@
           updateKeyAids([{ p, h: Rh }]);
           const litKey = kbKeys.find(m => m.material.emissive.getHex() === 0x3a7a10);
           vrPress.clear(); vrCool.clear();
-          const f = vrPressNearest('keytest', [{ p, h: Rh }], kbKeys, kbTouchPoint, KB_PRESS_R, 0);
-          if (f.length) { checked++; if (f[0].item !== litKey) mismatch++; }
+          const pk = kbKeyAt(p);
+          if (pk) { checked++; if (pk !== litKey) mismatch++; }
         }
         vrPress.clear(); vrCool.clear(); updateKeyAids(null);
         ok('lit key = pressed key (' + checked + ' presses at random points)', checked > 20 && mismatch === 0, mismatch + ' mismatches');
@@ -3503,7 +3558,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v37';
+  const GAME_VERSION = 'v38';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4308,7 +4363,7 @@
   window.__kbTest = {
     keys: () => kbKeys.map(m => ({ v: m.userData.value, p: kbTouchPoint(m, V3()).toArray(), color: m.material.color.getHex(), visible: m.visible })),
     oldVisible: () => keyParts.filter(m => m.visible).length,
-    nearest: (x, y, z) => { let best = null, bd = KB_PRESS_R; const p = V3(x, y, z); for (const m of kbKeys) { const d = p.distanceTo(kbTouchPoint(m, V3())); if (d < bd) { bd = d; best = m; } } return best ? best.userData.value : null; },
+    nearest: (x, y, z) => { const k = kbKeyAt(V3(x, y, z)); return k ? k.userData.value : null; },
     press: v => { const m = kbKeys.find(k => k.userData.value === v); if (!m) return null; m.userData.cool = 0; pressKey(m); return { mode: kbMode, text: kbText }; },
     pitch: () => { const a = kbTouchPoint(kbKeys.find(k => k.userData.value === 'Q'), V3()), b = kbTouchPoint(kbKeys.find(k => k.userData.value === 'W'), V3()), c = kbTouchPoint(kbKeys.find(k => k.userData.value === 'A'), V3()); return { along: a.distanceTo(b), across: a.distanceTo(c) }; }
   };
