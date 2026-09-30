@@ -796,23 +796,34 @@
   const adminIds = new Set();
   let adminDoor = null, adminDoorOpenZ = 0, adminDoorShut = 0;
   const standHammers = {}, adminButtons = [];
-  let adminFarWall = null, badgeBoard = null; const badgeButtons = [];
+  let adminFarWall = null, adminBanWall = null, badgeBoard = null; const badgeButtons = [];
   let banCv = null, banTex = null, banPlane = null, bans = [], banKey = '';
-  const BAN_ROW_Y0 = 96, BAN_ROW_H = 42;
+  const BAN_ROW_Y0 = 96, BAN_ROW_H = 40, BAN_PER_PAGE = 5;
+  const BAN_PREV = [392, 490], BAN_NEXT = [22, 120], BAN_FOOT_Y = 294; // footer buttons (canvas px)
+  let banPage = 0, banMsg = '', banMsgT = null;
+  // a short message on the board itself (a toast can't be seen in VR)
+  function banSay(msg, secs = 3) {
+    banMsg = msg; banKey = ''; drawBanBoard();
+    clearTimeout(banMsgT); banMsgT = setTimeout(() => { banMsg = ''; banKey = ''; drawBanBoard(); }, secs * 1000);
+  }
   function drawBanBoard() {
     if (!banCv) return;
     const now = Date.now();
-    const list = bans.filter(b => b.until > now).sort((a, b) => a.until - b.until);
-    const key = list.map(b => b.id + Math.ceil((b.until - now) / 60000)).join(',');
+    const all = bans.filter(b => b.until > now).sort((a, b) => a.until - b.until);
+    const pages = Math.max(1, Math.ceil(all.length / BAN_PER_PAGE));
+    banPage = Math.min(Math.max(0, banPage), pages - 1);
+    const list = all.slice(banPage * BAN_PER_PAGE, banPage * BAN_PER_PAGE + BAN_PER_PAGE);
+    const key = banPage + '|' + banMsg + '|' + all.map(b => b.id + Math.ceil((b.until - now) / 60000)).join(',');
     if (key === banKey) return;
     banKey = key;
     const c = banCv.getContext('2d');
     c.fillStyle = '#141414'; c.fillRect(0, 0, 512, 320);
     c.strokeStyle = '#c0503a'; c.lineWidth = 6; c.strokeRect(6, 6, 500, 308);
     c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillStyle = '#ff8a5a'; c.font = '900 40px Rubik, sans-serif'; c.fillText('באנים', 256, 46);
-    if (!list.length) { c.fillStyle = '#9a9a9a'; c.font = '700 26px Rubik, sans-serif'; c.fillText('אין אף אחד בבאן', 256, 170); }
-    list.slice(0, 5).forEach((b, i) => {
+    c.fillStyle = '#ff8a5a'; c.font = '900 40px Rubik, sans-serif'; c.fillText('באנים', 256, 40);
+    if (banMsg) { c.fillStyle = '#ffcf4a'; c.font = '700 20px Rubik, sans-serif'; c.fillText(banMsg, 256, 72); }
+    if (!all.length) { c.fillStyle = '#9a9a9a'; c.font = '700 26px Rubik, sans-serif'; c.fillText('אין אף אחד בבאן', 256, 170); }
+    list.forEach((b, i) => {
       const y = BAN_ROW_Y0 + i * BAN_ROW_H;
       c.textAlign = 'right'; c.fillStyle = '#ffffff'; c.font = '700 26px Rubik, sans-serif';
       c.fillText((b.name || 'שחקן').slice(0, 14), 480, y);
@@ -821,17 +832,38 @@
       c.fillStyle = '#2f7a2f'; c.fillRect(24, y - 16, 110, 32);
       c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = '700 20px Rubik, sans-serif'; c.fillText('הסר באן', 79, y + 1);
     });
+    // pages: more than 5 bans -> "previous" / "next" and "page X of Y · N banned"
+    if (all.length > BAN_PER_PAGE) {
+      const fbtn = ([x0, x1], label, on) => {
+        c.fillStyle = on ? '#3a3a3a' : '#222'; c.fillRect(x0, BAN_FOOT_Y - 14, x1 - x0, 28);
+        c.fillStyle = on ? '#fff' : '#555'; c.textAlign = 'center'; c.font = '700 18px Rubik, sans-serif'; c.fillText(label, (x0 + x1) / 2, BAN_FOOT_Y + 1);
+      };
+      fbtn(BAN_PREV, 'הקודם', banPage > 0);
+      fbtn(BAN_NEXT, 'הבא', banPage < pages - 1);
+      c.fillStyle = '#cfcfcf'; c.textAlign = 'center'; c.font = '700 17px Rubik, sans-serif';
+      c.fillText('עמוד ' + (banPage + 1) + ' מתוך ' + pages + ' · ' + all.length + ' בבאן', 256, BAN_FOOT_Y + 1);
+    }
     banTex.needsUpdate = true;
-    banBoardList = list.slice(0, 5);
+    banBoardList = list;
+    banPages = pages;
   }
+  let banPages = 1;
   let banBoardList = [];
   async function banBoardClick(uv) {
     const px = uv.x * 512, py = (1 - uv.y) * 320;
+    // footer: pages
+    if (banPages > 1 && Math.abs(py - BAN_FOOT_Y) <= 14) {
+      if (px >= BAN_PREV[0] && px <= BAN_PREV[1] && banPage > 0) { banPage--; banKey = ''; drawBanBoard(); tone(600, 0.05, 'square', 0.06); return true; }
+      if (px >= BAN_NEXT[0] && px <= BAN_NEXT[1] && banPage < banPages - 1) { banPage++; banKey = ''; drawBanBoard(); tone(600, 0.05, 'square', 0.06); return true; }
+      return false;
+    }
     const i = Math.round((py - BAN_ROW_Y0) / BAN_ROW_H), b = banBoardList[i];
-    if (!b || px < 24 || px > 134 || Math.abs(py - (BAN_ROW_Y0 + i * BAN_ROW_H)) > 16) return;
-    if (!isAdmin()) { toast('רק אדמינים', 1.5); return; }
-    try { await db.collection('bans').doc(b.id).delete(); toast('הסרת את הבאן של ' + (b.name || 'השחקן'), 2); tone(700, 0.15, 'triangle', 0.1); }
-    catch (e) { toast('לא הצלחתי. נסה שוב', 2); }
+    if (!b || px < 24 || px > 134 || Math.abs(py - (BAN_ROW_Y0 + i * BAN_ROW_H)) > 16) return false;
+    // only the owner can lift a ban (admins can still give bans with the hammer)
+    if (!isOwnerUid(myUserId)) { banSay('רק הבעלים יכול להוריד באן'); toast('רק הבעלים יכול להוריד באן', 2); tone(160, 0.15, 'square', 0.08); return true; }
+    try { await db.collection('bans').doc(b.id).delete(); banSay('הסרת את הבאן של ' + (b.name || 'השחקן')); toast('הסרת את הבאן של ' + (b.name || 'השחקן'), 2); tone(700, 0.15, 'triangle', 0.1); }
+    catch (e) { banSay('לא הצלחתי. נסה שוב'); }
+    return true;
   }
   let heldHammer = '', hammerHitThisSwing = false;
   const doorOpenShared = false; // the admin door is always shut; only admins pass through it (see probe)
@@ -940,6 +972,7 @@
       const c = { min: bb.min.clone(), max: bb.max.clone() };
       colliders.push(c);
       if (n === 'Cube.006') adminFarWall = c;
+      if (n === 'Cube') adminBanWall = c;
     });
     // ---- "My tag" board on the wall opposite the door (inner face of Cube.006), eye height, facing the door ----
     if (parts['Cube.006']) {
@@ -1525,6 +1558,7 @@
     _hzSkip.clear();
     if (deskCollider && keyboardZone().containsPoint(p)) _hzSkip.add(deskCollider);
     if (adminFarWall && badgeBoard && objBox(badgeBoard, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminFarWall);
+    if (adminBanWall && banPlane && objBox(banPlane, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminBanWall);
     if (wardCollider && wardrobeButtons.some(b => objBox(b.mesh, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
     for (const d of shopDisplays) if (d.pedCol && pedestalZone(d).containsPoint(p)) _hzSkip.add(d.pedCol);
     return _hzSkip.size ? _hzSkip : null;
@@ -1750,15 +1784,15 @@
     mic: right => { toggleMyMic(); buzz(right.pad, 0.4, 30); },
     calibrate: (left, right) => { startCalibration(); tone(520, 0.08, 'triangle', 0.1); buzz(right.pad, 0.6, 40); buzz(left.pad, 0.6, 40); }
   };
-  function planePress(pl, pts, fn) {
+  function planePress(pl, pts, fn, zIn = 0.04, cool = PLANE_COOL) {
     const w = pl.geometry.parameters.width, hh = pl.geometry.parameters.height;
     let uv = null;
     const t = vrPressCheck(pl, pts, (p, inside) => {
       const l = pl.worldToLocal(_vl.copy(p));
-      const on = Math.abs(l.z) < (inside ? 0.07 : 0.04) && Math.abs(l.x) < w / 2 && Math.abs(l.y) < hh / 2;
+      const on = Math.abs(l.z) < (inside ? zIn + 0.03 : zIn) && Math.abs(l.x) < w / 2 && Math.abs(l.y) < hh / 2;
       if (on && !uv) uv = { x: l.x / w + 0.5, y: l.y / hh + 0.5 };
       return on;
-    }, PLANE_COOL);
+    }, cool);
     if (t && uv && fn(uv) !== false) buzz(t.h.pad, 0.25, 20);
   }
   // Wardrobe buttons and shop items: the press point (the end of the wing you see, t.p) entering the object's Box3
@@ -1788,7 +1822,7 @@
     for (const f of vrPressBoxes('ward', pts, wardrobeButtons, (b, box) => objBox(b.mesh, box))) { vrActions.wardrobe(f.item); buzz(f.t.h.pad, 0.3, 25); }
     for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => objBox(d.spin, box))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
     boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
-    if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv));
+    if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv), 0.05, 0.5);
   }
   // Self-test for the ID / keyboard / admin-door / board changes. Temporarily swaps in a fake uid and a fake player,
   // restores everything afterwards, and returns images of the monitor and the player board.
@@ -1929,6 +1963,12 @@
         const bn0 = V3(0, 0, 1).applyQuaternion(badgeBoard.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
         const badgeRes = badgeButtons.map(b => { const box = objBox(b.mesh, new THREE.Box3()).expandByScalar(0.03), c = box.getCenter(V3()); return b.id + ': straight ' + reach(box, c, bn0, 0) + ', 45° ' + reach(box, c, bn0, 0.8); });
         ok('"My tag" board buttons reachable by the wing tip', badgeRes.every(s => !/stopped|missed|can not/.test(s)), badgeRes.join(' | '));
+        // the ban board hangs ~5 cm in front of the admin-room wall: can the wing tip get within 5 cm of "remove ban"?
+        const bpN = V3(0, 0, 1).applyQuaternion(banPlane.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
+        const banBtn = banPlane.localToWorld(V3((79 / 512 - 0.5) * 1.8, (0.5 - BAN_ROW_Y0 / 320) * 1.125, 0));
+        const banBox = new THREE.Box3().setFromCenterAndSize(banBtn, V3(0.1, 0.1, 0.1));
+        const banRes = 'straight ' + reach(banBox, banBtn, bpN, 0) + ', 45° ' + reach(banBox, banBtn, bpN, 0.8);
+        ok('ban board "remove ban" reachable by the wing tip', !/stopped|missed|can not/.test(banRes), banRes);
         ok('wardrobe buttons reachable by the wing tip', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
         const bob0 = shopDisplays.map(d => d.spin.position.y);
         shopDisplays.forEach(d => { d.spin.position.y = -0.04; }); // lowest point of the ±4 cm bob
@@ -2131,15 +2171,35 @@
     wristImage: () => { wristKey = ''; drawWrist(1, true); return wristCv.toDataURL('image/png'); },
     monitorImage: () => { drawMonitor(); return monCv.toDataURL('image/png'); },
     voiceStart: () => { voiceStart(); return 'ok'; },
-    voice: () => JSON.stringify({ active: voice.active, mic: voice.micState, micOn: voiceMicOn(), selfMuted: voice.selfMuted, mutedAll: [...voice.mutedAll],
+    voice: () => JSON.stringify({ restarts: voice.restarts, active: voice.active, mic: voice.micState, micOn: voiceMicOn(), selfMuted: voice.selfMuted, mutedAll: [...voice.mutedAll],
       peers: [...voice.peers.values()].map(p => ({ uid: p.uid, init: p.initiator, state: p.pc.connectionState, audio: !!p.nodes,
         inLevel: p.nodes ? Math.round(rms(p.nodes.an, p.nodes.buf) * 1e4) / 1e4 : 0, outLevel: p.nodes ? Math.round(rms(p.nodes.outAn, p.nodes.buf) * 1e4) / 1e4 : 0,
         speaking: !!(others.get(p.uid) && others.get(p.uid).speakSprite && others.get(p.uid).speakSprite.visible) })) }),
+    voiceStats: async () => {
+      const out = { ctx: ac ? ac.state : 'none', mic: voice.micTrack ? { enabled: voice.micTrack.enabled, muted: voice.micTrack.muted, state: voice.micTrack.readyState } : null, peers: [] };
+      for (const p of voice.peers.values()) {
+        const s = { uid: p.uid.slice(0, 5), state: p.pc.connectionState, elPaused: p.nodes ? p.nodes.el.paused : null, sendTrack: !!(p.tr && p.tr.sender.track) };
+        (await p.pc.getStats()).forEach(r => {
+          if (r.type === 'inbound-rtp' && r.kind === 'audio') { s.rxLevel = r.audioLevel; s.rxPackets = r.packetsReceived; s.rxEnergy = Math.round((r.totalAudioEnergy || 0) * 1000) / 1000; }
+          if (r.type === 'outbound-rtp' && r.kind === 'audio') { s.txPackets = r.packetsSent; }
+          if (r.type === 'media-source' && r.kind === 'audio') { s.srcLevel = r.audioLevel; }
+        });
+        out.peers.push(s);
+      }
+      return JSON.stringify(out);
+    },
     toggleMic: () => { toggleMyMic(); return voiceMicOn(); },
     muteForMe: uid => { toggleMute(uid); return mutedPeers.has(uid); },
     muteForAll: uid => toggleVoiceMuteAll(uid),
     moveOther: (uid, x, z) => { const o = others.get(uid); if (o) { o.head.position.set(x, 1.2, z); o.tH.set(x, 1.2, z); } },
     listener: () => JSON.stringify(camera.getWorldPosition(V3()).toArray()),
+    banBoard: () => { drawBanBoard(); return JSON.stringify({ rows: banBoardList.map(b => b.id), page: banPage, pages: banPages, msg: banMsg, total: bans.filter(b => b.until > Date.now()).length }); },
+    banClickRow: i => banBoardClick({ x: 79 / 512, y: 1 - (BAN_ROW_Y0 + i * BAN_ROW_H) / 320 }).then(r => String(r) + '|' + banMsg),
+    banNext: () => { banBoardClick({ x: 70 / 512, y: 1 - BAN_FOOT_Y / 320 }); return banPage; },
+    banPrev: () => { banBoardClick({ x: 440 / 512, y: 1 - BAN_FOOT_Y / 320 }); return banPage; },
+    banImage: () => { banKey = ''; drawBanBoard(); return banCv.toDataURL('image/png'); },
+    banned: () => !!myBan(),
+    hammerBan: uid => { setHeld('BAN'); return hammerHit(others.get(uid)).then(() => { setHeld(''); return 'done'; }); },
     listenAt: (x, z) => { rig.position.set(x, 0, z); camera.position.set(0, 1.2, 0); camera.rotation.set(0, 0, 0); camera.updateMatrixWorld(true); }
   };
   window.__roomMsgTest = async () => {
@@ -2708,7 +2768,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v26';
+  const GAME_VERSION = 'v27';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3092,8 +3152,8 @@
   // Signaling (who connects to whom) goes through Firebase at rtc/<to>/<from>; the audio itself goes straight between
   // the headsets (peer to peer), so it doesn't use Firebase's quota. Firebase mode only (the site / Quest app).
   const VOICE_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
-  const SPEAK_LEVEL = 0.012, VOICE_RETRY_MS = 9000;
-  const voice = { active: false, micTrack: null, micState: 'off', selfMuted: false, peers: new Map(), inbox: null, mutedAll: new Set() };
+  const SPEAK_LEVEL = 0.012, VOICE_RETRY_MS = 9000, VOICE_DOWN_MS = 6000; // retry: never came up / down for 6 s / failed
+  const voice = { active: false, micTrack: null, micState: 'off', selfMuted: false, peers: new Map(), inbox: null, mutedAll: new Set(), restarts: 0 };
   let voiceFb = null;
   const vrnd = () => Math.random().toString(36).slice(2, 10);
   function voiceMicOn() { return !!voice.micTrack && voice.micTrack.enabled; }
@@ -3142,6 +3202,11 @@
     const p = { uid, pc, tr, out, initiator, sid: initiator ? vrnd() : null, iceQ: [], seenIce: new Set(), createdAt: Date.now(), level: 0, nodes: null };
     pc.onicecandidate = e => { if (e.candidate && p.sid) out.child('ice').push({ c: JSON.stringify(e.candidate), sid: p.sid }).catch(() => {}); };
     pc.ontrack = e => attachVoice(p, e.streams[0] || new MediaStream([e.track]));
+    // a connection can dip to "disconnected" for a moment and recover by itself: remember when, don't hang up at once
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') { p.everConnected = true; p.downSince = 0; }
+      else if (pc.connectionState === 'disconnected' && !p.downSince) p.downSince = Date.now();
+    };
     voice.peers.set(uid, p);
     return p;
   }
@@ -3230,7 +3295,8 @@
       const p = voice.peers.get(uid), st = p && p.pc.connectionState;
       if (myUserId < uid) {
         if (!p) offerTo(uid);
-        else if (st !== 'connected' && Date.now() - p.createdAt > VOICE_RETRY_MS) { closePeer(uid); offerTo(uid); }
+        else if (st === 'failed' || (!p.everConnected && Date.now() - p.createdAt > VOICE_RETRY_MS) ||
+                 (st === 'disconnected' && p.downSince && Date.now() - p.downSince > VOICE_DOWN_MS)) { voice.restarts++; closePeer(uid); offerTo(uid); }
       } else if (p && (st === 'failed' || st === 'closed')) closePeer(uid);
     });
   }
