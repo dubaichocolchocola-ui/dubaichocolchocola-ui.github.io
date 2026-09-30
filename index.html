@@ -1178,6 +1178,8 @@
     m.add(lab);
     m.userData.lab = lab; m.userData.letterTex = lab.material.map;
     m.userData.value = value; m.userData.baseY = m.position.y; m.userData.press = 0; m.userData.cool = 0;
+    // own material per key (the digit keys share one), so a single key can light up
+    m.material = m.material.clone(); m.userData.baseEmissive = m.material.emissive.getHex();
     kbKeys.push(m);
   }
   const keyParts = Object.values(pcParts).filter(m => {
@@ -1305,6 +1307,7 @@
       measureKeyboard(handPoints);
       for (const f of vrPressNearest('key', handPoints, kbKeys, kbTouchPoint, KB_PRESS_R, 0, KB_RELEASE_R)) { vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15); }
     } else kbDebug.near = false;
+    updateKeyAids(handPoints);
   }
   // Each hand presses only its nearest key within KB_PRESS_R, once per touch (move the hand KB_PRESS_R + 3 cm away to
   // press it again). Distance is measured to where a hand touching that key actually is: a hand on the desk is held
@@ -1344,10 +1347,44 @@
   }
   const _kd = new THREE.Vector3();
   // press target: the centre of the key's top face (at rest, cached once so the press animation doesn't move it)
+  // = the key's real centre from its own geometry's boundingBox (middle of x and z, max.y), in world space. Only the
+  // key mesh itself (not the label on it), computed once at rest so the press animation doesn't move it.
   function kbTouchPoint(m, out) {
     const u = m.userData;
-    if (!u.topPt) { const b = new THREE.Box3().setFromObject(m); u.topPt = b.getCenter(V3()); u.topPt.y = b.max.y + (u.press > 0 ? 0.012 * PC_S : 0); }
+    if (!u.topPt) {
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox;
+      m.updateWorldMatrix(true, false);
+      u.topPt = m.localToWorld(V3((b.min.x + b.max.x) / 2, b.max.y, (b.min.z + b.max.z) / 2));
+      if (u.press > 0) u.topPt.y += 0.012 * PC_S; // measured mid-press: back to the rest height
+    }
     return out.copy(u.topPt);
+  }
+  // ---- Aiming aids near the keyboard: the key that would be chosen lights up green, and a small yellow dot shows
+  // each hand's exact press point ----
+  const KB_HILITE_R = 0.12, KB_HILITE = 0x3a7a10;
+  const kbDots = [0, 1].map(() => {
+    const d = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffe000, depthTest: false }));
+    d.renderOrder = 999; d.visible = false; scene.add(d);
+    return d;
+  });
+  function nearestKey(p, maxD) {
+    let best = null, bd = maxD;
+    for (const m of kbKeys) { const d = p.distanceTo(kbTouchPoint(m, _kd)); if (d < bd) { bd = d; best = m; } }
+    return best;
+  }
+  function updateKeyAids(pts) {
+    const lit = new Set();
+    kbDots.forEach(d => { d.visible = false; });
+    if (pts) pts.forEach((t, i) => {
+      if (i < kbDots.length && keyboardZone().containsPoint(t.p)) { kbDots[i].position.copy(t.p); kbDots[i].visible = true; }
+      const k = nearestKey(t.p, KB_HILITE_R);
+      if (k) lit.add(k);
+    });
+    for (const m of kbKeys) {
+      const want = lit.has(m) ? KB_HILITE : m.userData.baseEmissive;
+      if (m.material.emissive.getHex() !== want) m.material.emissive.setHex(want);
+    }
   }
   let lastBlink = -1;
   const _kw = new THREE.Vector3();
@@ -1597,6 +1634,35 @@
       const pcFront = V3(COMPUTER.x, 0, COMPUTER.z), toKey = kL.getWorldPosition(V3()).sub(pcFront).setY(0).normalize();
       approach('from the player at 45°', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.45).add(V3(0, 0.45, 0)));
       approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
+      // aiming aids + press point from the key geometry
+      ok('every key has its own material', new Set(kbKeys.map(m => m.material)).size === kbKeys.length);
+      {
+        const g = kL.geometry.clone().applyMatrix4(kL.matrixWorld); g.computeBoundingBox();
+        const b = g.boundingBox, expect = V3((b.min.x + b.max.x) / 2, b.max.y, (b.min.z + b.max.z) / 2);
+        ok('press point = geometry bbox centre x/z + max.y', kbTouchPoint(kL, V3()).distanceTo(expect) < 0.002, (kbTouchPoint(kL, V3()).distanceTo(expect) * 1000).toFixed(2) + ' mm off');
+      }
+      const Rh = { side: 'right' }, kK = key('K');
+      updateKeyAids([{ p: pL.clone(), h: Rh }]);
+      ok('hand on L: L lights green 0x3a7a10, K does not', kL.material.emissive.getHex() === 0x3a7a10 && kK.material.emissive.getHex() !== 0x3a7a10);
+      ok('hand on L: yellow dot at the press point', kbDots[0].visible && kbDots[0].position.distanceTo(pL) < 1e-6 && kbDots[0].material.depthTest === false && kbDots[0].geometry.parameters.radius === 0.012);
+      updateKeyAids([{ p: pL.clone().add(V3(0, 0.11, 0)), h: Rh }]);
+      ok('11 cm above L: still lit (range 0.12), no press range', kL.material.emissive.getHex() === 0x3a7a10);
+      updateKeyAids([{ p: pL.clone().add(V3(0, 0.6, 0)), h: Rh }]);
+      ok('hand away: nothing lit, dot hidden', !kbKeys.some(m => m.material.emissive.getHex() === 0x3a7a10) && !kbDots[0].visible);
+      // the lit key is always the key that gets pressed: 400 random points over the keyboard
+      {
+        const z = keyboardZone(); let checked = 0, mismatch = 0;
+        for (let i = 0; i < 400; i++) {
+          const p = V3(z.min.x + Math.random() * (z.max.x - z.min.x), pL.y + (Math.random() - 0.5) * 0.1, z.min.z + Math.random() * (z.max.z - z.min.z));
+          updateKeyAids([{ p, h: Rh }]);
+          const litKey = kbKeys.find(m => m.material.emissive.getHex() === 0x3a7a10);
+          vrPress.clear(); vrCool.clear();
+          const f = vrPressNearest('keytest', [{ p, h: Rh }], kbKeys, kbTouchPoint, KB_PRESS_R, 0);
+          if (f.length) { checked++; if (f[0].item !== litKey) mismatch++; }
+        }
+        vrPress.clear(); vrCool.clear(); updateKeyAids(null);
+        ok('lit key = pressed key (' + checked + ' presses at random points)', checked > 20 && mismatch === 0, mismatch + ' mismatches');
+      }
       out.push({ label: 'desk top y ' + deskTop.toFixed(3) + ', key L centre y ' + kL.getWorldPosition(V3()).y.toFixed(3) + ', touch y ' + pL.y.toFixed(3), ok: true, info: '' });
     } finally {
       others.delete('__test');
@@ -2137,7 +2203,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v15';
+  const GAME_VERSION = 'v16';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
