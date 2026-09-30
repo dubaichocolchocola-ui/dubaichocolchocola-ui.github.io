@@ -1269,6 +1269,12 @@
     if (n === 'Cube') deskCollider = c;
   });
   let kbText = '', kbMsg = '', kbMsgColor = '#7ed957', kbMsgTimer = 0, kbBlink = 0, kbMode = 'code';
+  // largest font (up to px) that keeps text within maxW pixels
+  function fitFont(c, text, px, maxW, family) {
+    c.font = '700 ' + px + 'px ' + family;
+    const w = c.measureText(text).width;
+    if (w > maxW) c.font = '700 ' + Math.max(10, Math.floor(px * maxW / w)) + 'px ' + family;
+  }
   function drawMonitor() {
     const c = monCv.getContext('2d');
     c.fillStyle = '#5b6068'; c.fillRect(0, 0, 512, 320);
@@ -1281,8 +1287,10 @@
       c.font = '700 76px Consolas, monospace'; // 76px: 10 characters fit the screen
       c.fillText(idOf(myIdUid()), 28, 150);
       if (isOwnerUid(myUserId)) { // owner: type a player's ID + ENTER = admin on/off
-        c.fillStyle = '#ffffff'; c.font = '700 30px Consolas, monospace';
-        c.fillText('ADMIN ID: ' + kbText + (kbBlink % 2 ? '_' : ' '), 28, 212);
+        c.fillStyle = '#ffffff'; fitFont(c, 'ID: ' + kbText + '_', 30, 456, 'Consolas, monospace');
+        c.fillText('ID: ' + kbText + (kbBlink % 2 ? '_' : ' '), 28, 202);
+        c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = '700 17px Consolas, monospace';
+        c.fillText('ID+ENTER = ADMIN   ID SPC 100+ENTER = COINS', 28, 226);
       }
     } else if (kbMode === 'color') {
       c.fillStyle = myColor; c.fillRect(28, 100, 90, 60);
@@ -1295,7 +1303,7 @@
     let rl = 'OFFLINE';
     try { rl = room ? (roomCode ? roomCode.toUpperCase() : 'PUBLIC') : 'OFFLINE'; } catch (e) {} // room is declared further down
     c.font = '700 34px Consolas, monospace';
-    if (kbMsg) { c.fillStyle = kbMsgColor; c.fillText(kbMsg, 28, 255); } // a join result for a few seconds
+    if (kbMsg) { c.fillStyle = kbMsgColor; fitFont(c, kbMsg, 34, 456, 'Consolas, monospace'); c.fillText(kbMsg, 28, 262); } // a result for a few seconds
     else { c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa'; c.fillText('ROOM: ' + rl, 28, 255); }
     monTex.needsUpdate = true;
   }
@@ -1398,10 +1406,16 @@
       // ID screen: for players the typing keys and ENTER do nothing. The owner types another player's ID + ENTER to
       // make them an admin (or remove it).
       if (!isOwnerUid(myUserId)) return;
-      if (v === 'ENT') { const t = kbText; kbText = ''; toggleAdminById(t); drawMonitor(); return; }
+      if (v === 'ENT') {
+        const t = kbText.trim(); kbText = '';
+        const m = t.match(/^([0-9A-Z]{10}) ([0-9]{1,16})$/);
+        if (m) giveCoinsById(m[1], Number(m[2])); else toggleAdminById(t);
+        drawMonitor(); return;
+      }
       if (v === 'DEL') kbText = kbText.slice(0, -1);
       else if (v === 'CLR') kbText = '';
-      else if (/^[A-Z0-9]$/.test(v) && kbText.length < 10) kbText += v;
+      else if (v === 'SPC') { if (kbText.length === 10) kbText += ' '; }            // ID, then a space, then the amount
+      else if (/^[A-Z0-9]$/.test(v) && (kbText.length < 10 || (kbText.length > 10 && /^[0-9]$/.test(v) && kbText.length < 27))) kbText += v;
       drawMonitor(); return;
     }
     if (v === 'DEL') kbText = kbText.slice(0, -1);
@@ -2098,7 +2112,18 @@
     typeAdminId: id => { kbMode = 'id'; kbText = id; return toggleAdminById(id); },
     monitorLine: () => kbMsg,
     ban: (uid, mins) => db.collection('bans').doc(uid).set({ until: Date.now() + mins * 60000, name: 'x', by: myUserId }),
-    setName: n => setMyName(n)
+    setName: n => setMyName(n),
+    coins: () => JSON.stringify({ balance: shop.coins, srv: coinSrv, pending: earnPending }),
+    give: (id, amount) => giveCoinsById(id, amount).then(ok => ok + ' ' + kbMsg),
+    earn: n => { addCoins(n); return shop.coins; },
+    flush: () => { lastEarnAt = 0; flushEarn(); },
+    buy: id => { const it = SHOP_ITEMS.find(i => i.id === id); buyItem(it); return shop.coins; },
+    owned: () => shop.owned.slice(),
+    rawSet: (path, v) => firebase.database().ref(path).set(v).then(() => 'ok', e => 'DENIED ' + (e.code || e.message)),
+    rawUpdate: (path, v) => firebase.database().ref(path).update(v).then(() => 'ok', e => 'DENIED ' + (e.code || e.message)),
+    idOfMe: () => idOf(myUserId),
+    wristImage: () => { wristKey = ''; drawWrist(1, true); return wristCv.toDataURL('image/png'); },
+    monitorImage: () => { drawMonitor(); return monCv.toDataURL('image/png'); }
   };
   window.__roomMsgTest = async () => {
     const out = [], imgs = {};
@@ -2664,7 +2689,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v24';
+  const GAME_VERSION = 'v25';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2694,7 +2719,7 @@
     const kbLine = kbDebug.near
       ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
       : '';
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}`;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2708,17 +2733,21 @@
     c.font = `900 36px ${F}`;
     c.fillText(calibrating ? 'עמוד ישר… מכייל' : 'כיול גובה', CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y + CAL_BTN.h / 2 + 2);
     c.fillStyle = '#fff'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.font = `900 72px ${F}`;
-    c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 82);
+    c.font = `900 62px ${F}`;
+    c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 58);
+    // coins (can be a very big number: the font shrinks so it always fits the panel)
+    const coinTxt = '🪙 ' + fmtCoins(shop.coins);
+    c.direction = 'ltr'; c.fillStyle = '#ffcf4a'; fitFont(c, coinTxt, 40, 460, F);
+    c.fillText(coinTxt, 256, 116); c.direction = 'rtl';
     if (kbLine) {
       // near the computer: nearest key, distance (green = in press range), height above touch height, sideways offset
       c.font = `700 34px Consolas, monospace`; c.direction = 'ltr';
       c.fillStyle = kbDebug.dist <= KB_PRESS_R ? '#7ed957' : '#ffb070';
-      c.fillText(kbLine, 256, 160);
+      c.fillText(kbLine, 256, 168);
       c.direction = 'rtl';
     } else {
-      c.font = `700 40px ${F}`; c.fillStyle = '#ffe9a8';
-      c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 160);
+      c.font = `700 34px ${F}`; c.fillStyle = '#ffe9a8';
+      c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 168);
     }
     // Version + arm length, so it's obvious in the headset which build is running
     c.font = `700 28px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
@@ -3008,7 +3037,11 @@
           add(v) { return ref.push(v); }
         };
       },
-      get: path => fdb.ref(path).once('value').then(s => s.val())
+      get: path => fdb.ref(path).once('value').then(s => s.val()),
+      watch(path, cb) { const r = fdb.ref(path), f = s => cb(s.val()); r.on('value', f, () => {}); return () => r.off('value', f); },
+      update: (path, v) => fdb.ref(path).update(v),
+      transaction: (path, fn) => fdb.ref(path).transaction(fn),
+      TS
     };
     return { uid, lobby: lobbyRoom, db: dbApi };
   }
@@ -3054,6 +3087,7 @@
         const fb = await firebaseBackend();
         myUserId = fb.uid; db = fb.db; lobby = fb.lobby;
         listenDb();
+        startCoinSync();
         // register my ID -> uid, so the owner can make me an admin by my ID
         db.collection('ids').doc(idOf(myUserId)).set({ uid: myUserId, name: myName, at: Date.now() }).catch(() => {});
       }
@@ -3420,7 +3454,7 @@
     if (up.textContent !== upText) up.textContent = upText;
     if (up.style.display !== (showUp ? 'block' : 'none')) up.style.display = showUp ? 'block' : 'none';
     // coins for playing
-    if (deskMode) { coinT += dt; if (coinT >= 15) { coinT = 0; addCoins(1); } }
+    if (started) { coinT += dt; if (coinT >= 15) { coinT = 0; addCoins(1); } } // a coin per 15 s of play (in VR)
 
     // ---- Game mode: 4+ players = infection ----
     const wasInfect = infectMode;
@@ -3598,8 +3632,8 @@
   }
   let nearShop = false, inShopArea = false, coinT = 0;
   function renderShop() {
-    $('shopCoins').textContent = shop.coins;
-    $('hudCoins').textContent = '🪙 ' + shop.coins;
+    $('shopCoins').textContent = fmtCoins(shop.coins);
+    $('hudCoins').textContent = '🪙 ' + fmtCoins(shop.coins);
     const grid = $('shopGrid'); grid.innerHTML = '';
     SHOP_ITEMS.forEach(it => {
       const owned = shop.owned.includes(it.id), worn = shop.wearing.includes(it.id);
@@ -3622,18 +3656,73 @@
   function closeShop() { if ($('shopBox').hidden) return; $('shopBox').hidden = true; termOpen = false; }
   function buyItem(it) {
     if (shop.coins < it.price || shop.owned.includes(it.id)) return;
-    shop.coins -= it.price; shop.owned.push(it.id); shop.wearing = shop.wearing.filter(id => id !== it.id).concat(it.id);
-    saveShop(); tagSound(); renderShop(); $('hudCoins').textContent = '🪙 ' + shop.coins;
+    shop.owned.push(it.id); shop.wearing = shop.wearing.filter(id => id !== it.id).concat(it.id);
+    if (coinSrv) {
+      // online: the purchase is a server write (spent += price); the server refuses it if the balance is too low
+      const spent = (coinSrv.spent || 0) + it.price;
+      coinSrv.spent = spent; coinsChanged();
+      db.update('coins/' + myUserId, { spent }).catch(() => {
+        shop.owned = shop.owned.filter(id => id !== it.id); shop.wearing = shop.wearing.filter(id => id !== it.id);
+        saveShop(); renderShop(); drawShopTags(); toast('הקנייה לא הצליחה', 2); tone(160, 0.15, 'square', 0.08);
+      });
+    } else shop.coins -= it.price;
+    saveShop(); tagSound(); renderShop(); coinsChanged();
   }
   function toggleWear(it) {
     if (shop.wearing.includes(it.id)) shop.wearing = shop.wearing.filter(id => id !== it.id);
     else shop.wearing.push(it.id);
     saveShop(); sendTimer = 0; renderShop();
   }
-  function addCoins(n) { shop.coins += n; saveShop(); $('hudCoins').textContent = '🪙 ' + shop.coins; drawShopTags(); }
+  // ---- Coins. Online (Firebase) they live on the server per uid: balance = granted (only the owner can change it)
+  // + earned (by playing; the server allows at most +5 per 10 s) - spent (the player can only raise it, up to what
+  // they have). Offline / on claude.ai they stay on the headset like before. ----
+  let coinSrv = null, earnPending = 0, earnBusy = false, lastEarnAt = 0;
+  const EARN_MAX = 5, EARN_GAP = 11000;
+  const fmtCoins = n => Math.max(0, Math.floor(n)).toLocaleString('en-US');
+  function coinsChanged() {
+    // only what the server confirmed (coins still waiting to be sent can't be spent yet, so they aren't shown yet)
+    if (coinSrv) shop.coins = Math.max(0, (coinSrv.granted || 0) + (coinSrv.earned || 0) - (coinSrv.spent || 0));
+    $('hudCoins').textContent = '🪙 ' + fmtCoins(shop.coins); $('shopCoins').textContent = fmtCoins(shop.coins);
+    drawShopTags(); wristKey = '';
+  }
+  function addCoins(n) {
+    if (coinSrv) { earnPending += n; flushEarn(); } else { shop.coins += n; saveShop(); }
+    coinsChanged();
+  }
+  function flushEarn() {
+    if (!coinSrv || earnBusy || earnPending <= 0 || Date.now() - lastEarnAt < EARN_GAP) return;
+    const n = Math.min(EARN_MAX, earnPending), earned = (coinSrv.earned || 0) + n;
+    earnBusy = true;
+    db.update('coins/' + myUserId, { earned, et: db.TS })
+      .then(() => { earnPending -= n; coinSrv.earned = earned; lastEarnAt = Date.now(); })
+      .catch(() => { lastEarnAt = Date.now(); }) // too soon for the server: try again after the gap
+      .finally(() => { earnBusy = false; coinsChanged(); });
+  }
+  setInterval(flushEarn, 2000);
+  function startCoinSync() {
+    if (!db || !db.watch || !myUserId) return;
+    db.watch('coins/' + myUserId, v => { coinSrv = Object.assign({ granted: 0, earned: 0, spent: 0 }, v || {}); coinsChanged(); });
+  }
+  // owner only: add coins to the player with this ID (the server lets only the owner change "granted")
+  async function giveCoinsById(id, amount) {
+    id = (id || '').toUpperCase();
+    if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return false; }
+    if (!(amount > 0) || !Number.isSafeInteger(amount)) { monSay('BAD AMOUNT', '#ff8a70'); return false; }
+    if (!db || !db.transaction) { monSay('NO SERVER', '#ff8a70'); return false; }
+    try {
+      const rec = await db.get('ids/' + id);
+      if (!rec || !rec.uid) { monSay('ID NOT FOUND', '#ff8a70'); return false; }
+      const res = await db.transaction('coins/' + rec.uid + '/granted', cur => {
+        const next = (typeof cur === 'number' ? cur : 0) + amount;
+        return Number.isSafeInteger(next) ? next : undefined; // undefined = don't write (too big)
+      });
+      if (!res.committed) { monSay('TOO MANY COINS', '#ff8a70'); return false; }
+      monSay('+' + fmtCoins(amount) + ' TO ' + id, '#ffcf4a'); tagSound();
+      return true;
+    } catch (e) { monSay('FAILED', '#ff4a3a'); return false; }
+  }
   $('shopClose').addEventListener('click', closeShop);
-  $('hudCoins').textContent = '🪙 ' + shop.coins;
-  drawShopTags();
+  coinsChanged();
   function closeTerm() {
     termOpen = false;
     $('term').hidden = true;
