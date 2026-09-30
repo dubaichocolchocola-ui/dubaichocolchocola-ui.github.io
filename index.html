@@ -2060,6 +2060,18 @@
         ok('shop items sit on their pedestals (at the bottom of the bob)', seat.every(s => s.ok), seat.map(s => s.txt).join(' | '));
         shopDisplays.forEach((d, i) => { d.spin.position.y = bob0[i]; });
       }
+      // penguin height: feet on the floor at the calibrated head height; a crouching player's penguin doesn't sink
+      {
+        const t = makeAvatar('#88aaff', '', false, 'penguin'), feet = a => { a.model.updateMatrixWorld(true); return new THREE.Box3().setFromObject(a.model).min.y; };
+        const x = 30, z = -30; // an open spot
+        poseAvatar(t, V3(x, HEAD_GAME_Y, z), V3(x - 0.3, 0.6, z - 0.2), V3(x + 0.3, 0.6, z - 0.2), 0);
+        const standFeet = feet(t);
+        poseAvatar(t, V3(x, 0.45, z), V3(x - 0.3, 0.3, z - 0.2), V3(x + 0.3, 0.3, z - 0.2), 0);
+        const crouchFeet = feet(t);
+        ok('penguin at head ' + HEAD_GAME_Y + ' m: feet on the floor (' + (standFeet * 100).toFixed(1) + ' cm)', standFeet > -0.02 && standFeet < 0.06);
+        ok('crouching player (head 0.45 m): penguin stays on the floor (' + (crouchFeet * 100).toFixed(1) + ' cm)', crouchFeet > -0.02 && crouchFeet < 0.06);
+        disposeAvatar(t);
+      }
       // shop mirror: render it from a camera standing in front of it and read the pixels back
       {
         mirror.updateMatrixWorld();
@@ -2585,7 +2597,16 @@
     f.mesh.updateWorldMatrix(true, false); // posePenguin changes pv/stretch after the model's matrix update
     return f.mesh.localToWorld(out.copy(f.tipLocal));
   }
+  // feet of the penguin are this far below its head; a penguin (not your own first-person body) is lifted so its
+  // feet never go below the surface under it, e.g. when that player crouches in real life
+  const PENGUIN_FEET = -PENGUIN.bottom * PENGUIN_S;
+  function groundBelow(p) {
+    let g = 0;
+    for (const c of colliders) if (p.x >= c.min.x && p.x <= c.max.x && p.z >= c.min.z && p.z <= c.max.z && c.max.y <= p.y + 0.05 && c.max.y > g) g = c.max.y;
+    return g;
+  }
   function posePenguin(a, h, l, r, yaw) {
+    if (a !== selfAv) { const minY = groundBelow(h) + PENGUIN_FEET; if (h.y < minY) h = h.clone().setY(minY); }
     a.hl.position.copy(l); a.hr.position.copy(r);
     a.hl.rotation.y = yaw; a.hr.rotation.y = yaw;
     a.model.position.copy(h);
@@ -2836,7 +2857,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v29';
+  const GAME_VERSION = 'v30';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -2895,6 +2916,9 @@
     c.fillStyle = calibrating ? '#7ed957' : calBtnHover ? '#ffe58a' : '#ffcf4a';
     c.beginPath(); if (c.roundRect) c.roundRect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h, 35); else c.rect(CAL_BTN.x, CAL_BTN.y, CAL_BTN.w, CAL_BTN.h); c.fill();
     c.fillStyle = '#2a1a05'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillStyle = 'rgba(255,255,255,0.8)'; c.font = `700 17px ${F}`;
+    c.fillText(calibrating ? 'אל תזוז…' : 'עמוד ישר ולחץ', CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y - 11); // hint over the button
+    c.fillStyle = '#2a1a05';
     const calTxt = calibrating ? 'עמוד ישר… מכייל' : 'כיול גובה';
     fitFont(c, calTxt, 34, CAL_BTN.w - 24, F); c.font = c.font.replace('700', '900');
     c.fillText(calTxt, CAL_BTN.x + CAL_BTN.w / 2, CAL_BTN.y + CAL_BTN.h / 2 + 2);
@@ -3495,7 +3519,9 @@
   // ---- Height calibration (VR) ----
   // For the first CALIB_TIME seconds after entering VR (or after pressing the wrist button) the highest head height
   // is taken as the player's standing height, and view is shifted so that height becomes HEAD_GAME_Y in the game.
-  const HEAD_GAME_Y = 1.2, CALIB_TIME = 3, CALIB_SKIP = 0.25;
+  // 1.0 m = the penguin's own head height (its feet are 0.97 m below the head), for everyone: taller players are
+  // lowered, shorter ones raised, so small kids reach the floor too
+  const HEAD_GAME_Y = 1.0, CALIB_TIME = 3, CALIB_SKIP = 0.25;
   let calibT = -1, calibMax = 0;
   function startCalibration() { calibT = 0; calibMax = 0; calibHigherT = 0; wristKey = ''; }
   function setViewOffset(y) {
