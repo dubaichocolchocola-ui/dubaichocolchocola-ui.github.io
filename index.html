@@ -1322,7 +1322,7 @@
     if (!kbZone) {
       kbZone = new THREE.Box3();
       kbKeys.forEach(m => kbZone.union(_kbb.setFromObject(m)));
-      kbZone.expandByVector(V3(0.08, 0, 0.08));
+      kbZone.expandByVector(V3(0.25, 0, 0.25)); // wide: the hand is ~15-17 cm from the wing tip that presses
       kbZone.min.y -= 0.35; kbZone.max.y += 0.45;
     }
     return kbZone;
@@ -1634,6 +1634,32 @@
       const pcFront = V3(COMPUTER.x, 0, COMPUTER.z), toKey = kL.getWorldPosition(V3()).sub(pcFront).setY(0).normalize();
       approach('from the player at 45°', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.45).add(V3(0, 0.45, 0)));
       approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
+      // press point = the end of the wing you see: pose the first-person penguin toward hand targets, then compare the
+      // press point with the wing end measured independently from the posed wing's world vertices
+      if (selfAv && selfAv.penguin) {
+        const head = pL.clone().add(V3(0, 0.55, 0.45)), yaw = 0;
+        const configs = [['hand on key L', pL.clone(), pL.clone().add(V3(0.5, 0, 0))],
+                         ['hands low and wide', head.clone().add(V3(-0.7, -0.9, -0.3)), head.clone().add(V3(0.8, -0.8, -0.4))],
+                         ['hands forward, short reach', head.clone().add(V3(-0.25, -0.3, -0.35)), head.clone().add(V3(0.25, -0.3, -0.35))]];
+        configs.forEach(([label, l, r]) => {
+          poseAvatar(selfAv, head.clone(), l, r, yaw);
+          [['left wing', 0, l], ['right wing', 1, r]].forEach(([wing, i, target]) => {
+            const tip = pressPointOf(hands[i]);
+            // independent: world vertices of that wing, projected on the shoulder->wing axis, centre of the last 5%
+            const f = selfAv.flippers.find(f => f.side === (i === 0 ? 'l' : 'r'));
+            f.mesh.updateWorldMatrix(true, false);
+            const sh = f.pv.getWorldPosition(V3()), pa = f.mesh.geometry.attributes.position, ws = [];
+            for (let k = 0; k < pa.count; k++) ws.push(f.mesh.localToWorld(V3().fromBufferAttribute(pa, k)));
+            const axis = target.clone().sub(sh).normalize(), proj = ws.map(w => w.clone().sub(sh).dot(axis)), mx = Math.max(...proj);
+            const end = V3(); let n = 0; ws.forEach((w, k) => { if (proj[k] >= mx * 0.95) { end.add(w); n++; } }); end.divideScalar(n);
+            updateKeyAids([{ p: tip, h: hands[i] }]);
+            const dotAt = kbDots[0].visible ? kbDots[0].position.distanceTo(tip) : 0;
+            ok(`${label}, ${wing}: press point on the wing end (${(tip.distanceTo(end) * 1000).toFixed(1)} mm)`, tip.distanceTo(end) < 0.005 && dotAt < 1e-6,
+              'old point (hand) was ' + (tip.distanceTo(target) * 100).toFixed(1) + ' cm from the wing end');
+          });
+        });
+        updateKeyAids(null);
+      } else ok('first-person penguin exists for the wing test', false);
       // aiming aids + press point from the key geometry
       ok('every key has its own material', new Set(kbKeys.map(m => m.material)).size === kbKeys.length);
       {
@@ -1930,7 +1956,12 @@
         const pa = penguinGeos[i].attributes.position, tv = new THREE.Vector3();
         let len = 0;
         for (let k = 0; k < pa.count; k++) len = Math.max(len, tv.fromBufferAttribute(pa, k).dot(rest));
-        flippers.push({ pv, rest, stretch, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
+        // the visible end of the flipper: centre of the vertices in its last 5% along the rest direction (mesh space).
+        // The paddle is wide, so this end is NOT on the pivot->hand line; flipperTip() gives its posed world position.
+        const tipLocal = V3(); let tipN = 0;
+        for (let k = 0; k < pa.count; k++) { tv.fromBufferAttribute(pa, k); if (tv.dot(rest) >= len * 0.95) { tipLocal.add(tv); tipN++; } }
+        tipLocal.divideScalar(Math.max(1, tipN));
+        flippers.push({ pv, rest, stretch, mesh, tipLocal, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
       } else {
         mesh.position.fromArray(p.pivot);
         bodyParts.add(mesh);
@@ -1956,6 +1987,15 @@
       tH: V3(), tL: V3(), tR: V3(), yaw: 0, it: false, imm: false, ready: false };
   }
   const _pInv = new THREE.Matrix4(), _pLoc = new THREE.Vector3(), _pQ = new THREE.Quaternion(), _pQI = new THREE.Quaternion();
+  // World position of the end of the flipper posed for hand slot i (posePenguin aims 'l' at its first hand, 'r' at
+  // its second), after the pose and the stretch. null for non-penguin avatars.
+  function flipperTip(a, i, out) {
+    if (!a || !a.penguin) return null;
+    const f = a.flippers.find(f => f.side === (i === 0 ? 'l' : 'r'));
+    if (!f) return null;
+    f.mesh.updateWorldMatrix(true, false); // posePenguin changes pv/stretch after the model's matrix update
+    return f.mesh.localToWorld(out.copy(f.tipLocal));
+  }
   function posePenguin(a, h, l, r, yaw) {
     a.hl.position.copy(l); a.hr.position.copy(r);
     a.hl.rotation.y = yaw; a.hr.rotation.y = yaw;
@@ -2203,7 +2243,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v16';
+  const GAME_VERSION = 'v17';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2496,6 +2536,11 @@
   // All in rig space.
   const ARM_REACH = 1.5, SHOULDER_SIDE = 0.2, SHOULDER_DOWN = 0.25;
   const _hwFwd = V3(), _hwRight = V3(1, 0, 0), _hwShoulder = V3();
+  // where hand h presses things: the tip of its first-person wing (falls back to the hand itself without a penguin body)
+  function pressPointOf(h) {
+    const i = hands.indexOf(h);
+    return flipperTip(selfAv, i, V3()) || handWorld(h, V3());
+  }
   function handWorld(h, out) {
     _hwFwd.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
     if (_hwFwd.lengthSq() > 1e-4) _hwRight.set(-_hwFwd.z, 0, _hwFwd.x).normalize(); // looking straight up/down: keep the last right
@@ -2807,9 +2852,10 @@
     if (myHammer) poseHammer(myHammer, handPos[1], Math.atan2(-tmp.x, -tmp.z), slapT > 0 ? -0.9 : 0);
 
     // ---- Room computer ----
-    // Button presses use the REAL hand positions: handPos is locked to an anchor HAND_R above a touched surface
-    // (for locomotion), so a hand resting on the desk/panel could never reach the buttons on it.
-    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: handWorld(h, V3()), h })) : null;
+    // Button presses (keys, buttons, wrist) and the yellow dot use the END OF THE WING you see (flipperTip, after the
+    // pose and stretch above), so you press exactly where you aim with the wing. The wing is posed to handPos, which is
+    // the real hand (handWorld) whenever the hand isn't planted on a surface; the desk over the keyboard never plants it.
+    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: pressPointOf(h), h })) : null;
     vrPressTick(dt);
     updateKeyboard(dt, pressPts);
     if (pressPts) updateVRButtons(pressPts);
@@ -2913,7 +2959,9 @@
       if (left) {
         left.ctrl.getWorldQuaternion(_wq);
         wrist.quaternion.copy(_wq).multiply(WRIST_LOCAL_Q);
-        wrist.position.copy(WRIST_LOCAL_POS).applyQuaternion(_wq).add(handPos[hands.indexOf(left)]);
+        // on the end of the left wing, like the press points
+        const li = hands.indexOf(left);
+        wrist.position.copy(WRIST_LOCAL_POS).applyQuaternion(_wq).add(flipperTip(selfAv, li, _wl) || handPos[li]);
         wrist.updateMatrixWorld();
       }
       wrist.visible = !!left;
