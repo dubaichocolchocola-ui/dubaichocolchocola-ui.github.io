@@ -1589,13 +1589,13 @@
     }, PLANE_COOL);
     if (t && uv && fn(uv) !== false) buzz(t.h.pad, 0.25, 20);
   }
-  // Wardrobe buttons and shop items: the REAL hand position (handWorld, t.hw) entering the object's Box3 (grown by
-  // BOX_PAD). Fires once when a hand enters an object (staying inside doesn't repeat), with a per-object cooldown.
+  // Wardrobe buttons and shop items: the press point (the end of the wing you see, t.p) entering the object's Box3
+  // (grown by BOX_PAD). Fires once when a hand enters an object (staying inside doesn't repeat), with a per-object cooldown.
   const BOX_PAD = 0.04, BOX_COOL = 0.5, _pb = new THREE.Box3();
   function vrPressBoxes(group, pts, items, boxOf) {
     const fired = [];
     for (const t of pts) {
-      const hp = t.hw || t.p, sk = group + '|' + t.h.side;
+      const hp = t.p, sk = group + '|' + t.h.side;
       let st = vrPress.get(sk);
       if (!st) vrPress.set(sk, st = { cur: null });
       const inside = items.find(it => boxOf(it, _pb).expandByScalar(BOX_PAD).containsPoint(hp)) || null;
@@ -1669,23 +1669,31 @@
       // the body moves so the hand stays on the anchor) and see where it stops relative to the key's touch point.
       const kL = key('L'), pL = kbTouchPoint(kL, V3()), deskTop = deskCollider.max.y;
       const approach = (label, from) => {
-        // aim 5 cm into the key and follow the path like the VR hand: it stops (plants) at the first probe hit
+        // move the WING TIP (the press point) 5 cm into the key, solving at each step for the hand position that puts
+        // the posed tip there; the hand (probe with HAND_R) plants at its first surface hit
         const target = pL.clone().add(V3(0, -0.05, 0));
-        const cur = from.clone(), dir = target.clone().sub(from), len = dir.length(); dir.normalize();
-        let stopped = null, bestD = Infinity, bestKey = null;
+        const P = V3(), dir = target.clone().sub(from), len = dir.length(); dir.normalize();
+        const head = pL.clone().addScaledVector(toKey, -0.55); head.y = HEAD_GAME_Y; // player standing at the desk
+        const yaw = Math.atan2(-toKey.x, -toKey.z), side = V3(toKey.z, 0, -toKey.x);
+        const restL = head.clone().addScaledVector(side, -0.3).add(V3(0, -0.6, 0));
+        let stopped = null, bestD = Infinity, bestKey = null, cur = null;
         for (let s = 0; s <= len && !stopped; s += 0.005) {
-          cur.copy(from).addScaledVector(dir, s);
+          P.copy(from).addScaledVector(dir, s);
+          cur = cur || P.clone();
+          for (let it = 0; it < 6; it++) { poseAvatar(selfAv, head.clone(), restL, cur, yaw); cur.add(P.clone().sub(flipperTip(selfAv, 1, V3()))); }
+          poseAvatar(selfAv, head.clone(), restL, cur, yaw);
+          const tip = flipperTip(selfAv, 1, V3());
           const hit = probe(cur, HAND_R, handProbeSkip(cur));
           if (hit) { stopped = hit; break; }
-          let nk = null, nd = Infinity; kbKeys.forEach(m => { const d = cur.distanceTo(kbTouchPoint(m, _vc)); if (d < nd) { nd = d; nk = m; } });
+          let nk = null, nd = Infinity; kbKeys.forEach(m => { const d = tip.distanceTo(kbTouchPoint(m, _vc)); if (d < nd) { nd = d; nk = m; } });
           if (nd < bestD) { bestD = nd; bestKey = nk; }
         }
         ok('reach L ' + label + ': closest ' + (bestD * 100).toFixed(1) + ' cm, nearest key ' + (bestKey ? bestKey.userData.value : '-'),
-          bestD <= KB_PRESS_R && bestKey === kL, stopped ? 'stopped on a surface, normal ' + stopped.normal.toArray().join(',') : 'hand not stopped before the key');
+          bestD <= KB_PRESS_R && bestKey === kL, (stopped ? 'hand planted on a surface, normal ' + stopped.normal.toArray().join(',') : 'hand not planted') + ' (wing tip moved)');
       };
-      approach('from straight above', pL.clone().add(V3(0, 0.5, 0)));
       // from where a player stands in front of the computer, reaching forward and down with the hand
       const pcFront = V3(COMPUTER.x, 0, COMPUTER.z), toKey = kL.getWorldPosition(V3()).sub(pcFront).setY(0).normalize();
+      approach('from straight above', pL.clone().add(V3(0, 0.5, 0)));
       approach('from the player at 45°', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.45).add(V3(0, 0.45, 0)));
       approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
       // press point = the end of the wing you see: pose the first-person penguin toward hand targets, then compare the
@@ -1714,17 +1722,26 @@
         });
         updateKeyAids(null);
       } else ok('first-person penguin exists for the wing test', false);
-      // wardrobe buttons + shop items: can a real hand (probe with HAND_R, planted at the first surface it touches)
-      // actually get into the object's padded box, coming from in front of it?
+      // wardrobe buttons + shop items: moving the WING TIP (the press point) toward the object's padded box from in
+      // front of it, does it get in before the HAND behind the wing (probe with HAND_R) is planted on a surface?
       {
         const reach = (box, center, dir, lift) => {
           const from = center.clone().addScaledVector(dir, 0.8).add(V3(0, lift, 0)), to = center.clone();
-          const cur = V3(), len = from.distanceTo(to);
+          const P = V3(), len = from.distanceTo(to);
+          const head = center.clone().addScaledVector(dir, 0.95); head.y = HEAD_GAME_Y; // player standing in front
+          const side = V3(-dir.z, 0, dir.x), restL = head.clone().addScaledVector(side, -0.3).add(V3(0, -0.6, 0));
+          const yaw = Math.atan2(dir.x, dir.z); // facing the object (-dir)
+          let cur = null;
           for (let s = 0; s <= len; s += 0.005) {
-            cur.lerpVectors(from, to, s / len);
-            if (box.containsPoint(cur)) return 'in';
+            P.lerpVectors(from, to, s / len);
+            cur = cur || P.clone();
+            for (let it = 0; it < 6; it++) { poseAvatar(selfAv, head.clone(), restL, cur, yaw); cur.add(P.clone().sub(flipperTip(selfAv, 1, V3()))); }
+            poseAvatar(selfAv, head.clone(), restL, cur, yaw);
+            const tip = flipperTip(selfAv, 1, V3());
+            if (tip.distanceTo(P) > 0.01) return 'tip can not be placed';
+            if (box.containsPoint(tip)) return 'in';
             const hit = probe(cur, HAND_R, handProbeSkip(cur));
-            if (hit) { const hc = colliders.find(c => cur.x >= c.min.x - HAND_R && cur.x <= c.max.x + HAND_R && cur.y >= c.min.y - HAND_R && cur.y <= c.max.y + HAND_R && cur.z >= c.min.z - HAND_R && cur.z <= c.max.z + HAND_R); return 'stopped ' + (box.distanceToPoint(cur) * 100).toFixed(1) + ' cm short on [' + (hc ? hc.min.toArray().map(v => v.toFixed(2)) + ' .. ' + hc.max.toArray().map(v => v.toFixed(2)) : '?') + '] at ' + cur.toArray().map(v => v.toFixed(2)); }
+            if (hit) { const hc = colliders.find(c => cur.x >= c.min.x - HAND_R && cur.x <= c.max.x + HAND_R && cur.y >= c.min.y - HAND_R && cur.y <= c.max.y + HAND_R && cur.z >= c.min.z - HAND_R && cur.z <= c.max.z + HAND_R); return 'stopped: tip ' + (box.distanceToPoint(tip) * 100).toFixed(1) + ' cm short, hand planted on [' + (hc ? hc.min.toArray().map(v => v.toFixed(2)) + ' .. ' + hc.max.toArray().map(v => v.toFixed(2)) : '?') + '] at ' + cur.toArray().map(v => v.toFixed(2)); }
           }
           return 'missed';
         };
@@ -1733,7 +1750,7 @@
           const lab = b.mesh.children[0], front = V3(0, 0, 1).applyQuaternion(lab.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize();
           return b.act + ': straight ' + reach(box, c, front, 0) + ', 45° ' + reach(box, c, front, 0.8);
         });
-        ok('wardrobe buttons reachable by the real hand', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
+        ok('wardrobe buttons reachable by the wing tip', wardRes.every(s => !/stopped|missed/.test(s)), wardRes.join(' | '));
         const bob0 = shopDisplays.map(d => d.spin.position.y);
         shopDisplays.forEach(d => { d.spin.position.y = -0.04; }); // lowest point of the ±4 cm bob
         const shopRes = shopDisplays.map(d => {
@@ -1749,7 +1766,7 @@
           d.spin.rotation.y = r0; d.spin.updateWorldMatrix(true, true);
           return d.it.name + ': ' + (bad.length ? 'stopped/missed ' + bad.join('; ') : 'in at all 8 angles, straight and 45°');
         });
-        ok('shop items reachable by the real hand', shopRes.every(s => !/stopped|missed/.test(s)), shopRes.join(' | '));
+        ok('shop items reachable by the wing tip', shopRes.every(s => !/stopped|missed/.test(s)), shopRes.join(' | '));
         // every item sits on top of its pedestal and stays over it while it spins (8 angles)
         const seat = shopDisplays.map(d => {
           const r0 = d.spin.rotation.y; let lowest = Infinity, farthest = 0;
@@ -2376,7 +2393,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v19';
+  const GAME_VERSION = 'v20';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2988,7 +3005,7 @@
     // Button presses (keys, buttons, wrist) and the yellow dot use the END OF THE WING you see (flipperTip, after the
     // pose and stretch above), so you press exactly where you aim with the wing. The wing is posed to handPos, which is
     // the real hand (handWorld) whenever the hand isn't planted on a surface; the desk over the keyboard never plants it.
-    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: pressPointOf(h), hw: handWorld(h, V3()), h })) : null;
+    const pressPts = inVR ? hands.filter(h => h.side).map(h => ({ p: pressPointOf(h), h })) : null;
     vrPressTick(dt);
     updateKeyboard(dt, pressPts);
     if (pressPts) updateVRButtons(pressPts);
