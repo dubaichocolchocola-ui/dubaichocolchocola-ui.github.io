@@ -1,6 +1,6 @@
 // Page: network first, so new versions of the game arrive right away (cache is only the offline fallback).
 // Everything else (three.js, icons): cache first.
-const CACHE = 'forest-tag-v27';
+const CACHE = 'forest-tag-v28';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   'https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js'];
 

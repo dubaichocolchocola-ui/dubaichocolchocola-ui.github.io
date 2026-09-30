@@ -1032,7 +1032,11 @@
     }
   }
   // the owner needs a real uid on both sides (OWNER_ID is empty until the owner is set)
-  const isOwnerUid = uid => !!uid && !!OWNER_ID && uid === OWNER_ID;
+  // Owners: the MAIN owner is fixed (OWNER_ID, can never be removed); more owners come from the server list
+  // owners/<uid>, which only the main owner can change. Every owner has all owner powers except changing owners.
+  const ownerIds = new Set();
+  const isMainOwnerUid = uid => !!uid && !!OWNER_ID && uid === OWNER_ID;
+  const isOwnerUid = uid => isMainOwnerUid(uid) || (!!uid && ownerIds.has(uid));
   const isAdmin = () => !!myUserId && (isOwnerUid(myUserId) || adminIds.has(myUserId));
   const isAdminUid = uid => !!uid && (isOwnerUid(uid) || adminIds.has(uid));
   // ---- Tag over the head: OWNER (brown) only for the owner, ADMIN (red) only for the owner and admins ----
@@ -1324,7 +1328,7 @@
         c.fillStyle = '#ffffff'; fitFont(c, 'ID: ' + kbText + '_', 30, 456, 'Consolas, monospace');
         c.fillText('ID: ' + kbText + (kbBlink % 2 ? '_' : ' '), 28, 202);
         c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = '700 17px Consolas, monospace';
-        c.fillText('ID+ENTER = ADMIN   ID SPC 100+ENTER = COINS', 28, 226);
+        c.fillText(isMainOwnerUid(myUserId) ? 'ID=ADMIN  ID SPC 100=COINS  ID SPC O=OWNER' : 'ID+ENTER = ADMIN   ID SPC 100+ENTER = COINS', 28, 226);
       }
     } else if (kbMode === 'color') {
       c.fillStyle = myColor; c.fillRect(28, 100, 90, 60);
@@ -1442,14 +1446,15 @@
       if (!isOwnerUid(myUserId)) return;
       if (v === 'ENT') {
         const t = kbText.trim(); kbText = '';
-        const m = t.match(/^([0-9A-Z]{10}) ([0-9]{1,16})$/);
-        if (m) giveCoinsById(m[1], Number(m[2])); else toggleAdminById(t);
+        const m = t.match(/^([0-9A-Z]{10}) ([0-9]{1,16})$/), mo = t.match(/^([0-9A-Z]{10}) O$/);
+        if (m) giveCoinsById(m[1], Number(m[2])); else if (mo) toggleOwnerById(mo[1]); else toggleAdminById(t);
         drawMonitor(); return;
       }
       if (v === 'DEL') kbText = kbText.slice(0, -1);
       else if (v === 'CLR') kbText = '';
       else if (v === 'SPC') { if (kbText.length === 10) kbText += ' '; }            // ID, then a space, then the amount
-      else if (/^[A-Z0-9]$/.test(v) && (kbText.length < 10 || (kbText.length > 10 && /^[0-9]$/.test(v) && kbText.length < 27))) kbText += v;
+      else if (/^[A-Z0-9]$/.test(v) && (kbText.length < 10 || (kbText.length > 10 && /^[0-9]$/.test(v) && !/ O$/.test(kbText) && kbText.length < 27))) kbText += v;
+      else if (v === 'O' && kbText.length === 11 && isMainOwnerUid(myUserId)) kbText += 'O'; // "ID O" = owner on/off (main owner only)
       drawMonitor(); return;
     }
     if (v === 'DEL') kbText = kbText.slice(0, -1);
@@ -1472,6 +1477,21 @@
     else if (kbText.length < 12) kbText += v;
     kbMsg = ''; drawMonitor();
   }
+  // main owner only: make the player with this ID an owner, or remove them (the server lets only the main owner)
+  async function toggleOwnerById(id) {
+    id = (id || '').toUpperCase();
+    if (!isMainOwnerUid(myUserId)) { monSay('ONLY THE MAIN OWNER', '#ff8a70'); return false; }
+    if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return false; }
+    if (!db || !db.get) { monSay('NO SERVER', '#ff8a70'); return false; }
+    try {
+      const rec = await db.get('ids/' + id);
+      if (!rec || !rec.uid) { monSay('ID NOT FOUND', '#ff8a70'); return false; }
+      if (isMainOwnerUid(rec.uid)) { monSay('THAT IS YOU (MAIN OWNER)', '#ffb070'); return false; }
+      if (ownerIds.has(rec.uid)) { await db.collection('owners').doc(rec.uid).delete(); monSay('OWNER REMOVED: ' + id, '#ffb070'); }
+      else { await db.collection('owners').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('OWNER ADDED: ' + id, '#ffcf4a'); tagSound(); }
+      return true;
+    } catch (e) { monSay('FAILED', '#ff4a3a'); return false; }
+  }
   async function toggleAdminById(id) {
     id = (id || '').toUpperCase();
     if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return; }
@@ -1479,7 +1499,7 @@
     try {
       const rec = await db.get('ids/' + id);
       if (!rec || !rec.uid) { monSay('ID NOT FOUND', '#ff8a70'); return; }
-      if (isOwnerUid(rec.uid)) { monSay('THAT IS YOU (OWNER)', '#ffb070'); return; }
+      if (isOwnerUid(rec.uid)) { monSay(rec.uid === myUserId ? 'THAT IS YOU (OWNER)' : 'ALREADY AN OWNER', '#ffb070'); return; }
       if (adminIds.has(rec.uid)) { await db.collection('admins').doc(rec.uid).delete(); monSay('ADMIN REMOVED: ' + id, '#ffb070'); }
       else { await db.collection('admins').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('ADMIN ADDED: ' + id, '#aaffaa'); tagSound(); }
     } catch (e) { monSay('FAILED', '#ff4a3a'); }
@@ -2199,6 +2219,8 @@
     banPrev: () => { banBoardClick({ x: 440 / 512, y: 1 - BAN_FOOT_Y / 320 }); return banPage; },
     banImage: () => { banKey = ''; drawBanBoard(); return banCv.toDataURL('image/png'); },
     banned: () => !!myBan(),
+    typeOwnerId: id => toggleOwnerById(id).then(ok => ok + '|' + kbMsg),
+    owners: () => [...ownerIds], isOwner: () => isOwnerUid(myUserId),
     hammerBan: uid => { setHeld('BAN'); return hammerHit(others.get(uid)).then(() => { setHeld(''); return 'done'; }); },
     listenAt: (x, z) => { rig.position.set(x, 0, z); camera.position.set(0, 1.2, 0); camera.rotation.set(0, 0, 0); camera.updateMatrixWorld(true); }
   };
@@ -2768,7 +2790,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v27';
+  const GAME_VERSION = 'v28';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4057,6 +4079,10 @@
   $('repCancel').addEventListener('click', closeReport);
   // live admin list + bans (from claude.ai's database, or from Firebase once signed in)
   function listenDb() {
+      if (db) db.collection('owners').onSnapshot(snap => {
+        ownerIds.clear(); snap.docs.forEach(d => ownerIds.add(d.id));
+        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0;
+      }, () => {});
       if (db) db.collection('voiceMutes').onSnapshot(snap => {
         voice.mutedAll = new Set(snap.docs.map(d => d.id)); applyMicEnabled(); lastListKey = '';
       }, () => {});
