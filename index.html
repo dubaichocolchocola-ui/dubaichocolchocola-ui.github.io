@@ -2858,7 +2858,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v31';
+  const GAME_VERSION = 'v32';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -2906,7 +2906,7 @@
     const kbLine = kbDebug.near
       ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
       : '';
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}|${Date.now() < hammerMsgUntil ? hammerMsg : ''}|${JSON.stringify(vd)}`;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}|${Date.now() < hammerMsgUntil ? hammerMsg : ''}|${JSON.stringify(vd)}|${roomCode}|${!!room}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2960,7 +2960,8 @@
       const bx = 30 + c.measureText('MIC: ' + d.mic).width + 10, bw = Math.max(40, 242 - bx); // the bar starts after the text
       c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(bx, 221, bw, 14);
       c.fillStyle = d.lvl >= 8 ? '#ffcf4a' : '#7ed957'; c.fillRect(bx, 221, bw * d.lvl / 10, 14);
-      const vt = 'VOICE: ' + d.ok + ' connected' + (d.bad ? ' · ' + d.bad + ' failed' : '') + (d.wait ? ' · ' + d.wait + ' connecting' : '');
+      let rn = 'OFFLINE'; try { rn = room ? (roomCode ? roomCode.toUpperCase() : 'PUBLIC') : 'OFFLINE'; } catch (e) {}
+      const vt = 'VOICE: ' + d.ok + ' connected' + (d.bad ? ' · ' + d.bad + ' failed' : '') + (d.wait ? ' · ' + d.wait + ' connecting' : '') + ' · ' + rn;
       c.fillStyle = d.bad ? '#ff8a70' : d.ok ? '#c8f5b0' : '#bbbbbb'; fitFont(c, vt, 19, 230, F);
       c.fillText(vt, 252, 228); c.textAlign = 'center';
     }
@@ -3410,6 +3411,7 @@
   const _vq = new THREE.Quaternion();
   // who to talk to: everyone in my room; the smaller uid calls, and retries while the call isn't up
   function voiceSync() {
+    if (!voice.active && !ON_CLAUDE && voiceFb && myUserId && renderer.xr.isPresenting) voiceStart(); // started too early before: try again
     if (!voice.active) return;
     const want = new Set([...others.values()].filter(o => o.ready && o.uid && o.peer === o.uid).map(o => o.uid));
     voice.peers.forEach((p, uid) => { if (!want.has(uid)) closePeer(uid); });
