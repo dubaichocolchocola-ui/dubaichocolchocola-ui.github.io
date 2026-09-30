@@ -869,20 +869,31 @@
   const doorOpenShared = false; // the admin door is always shut; only admins pass through it (see probe)
   let lolliMouth = false, lolliArmed = true;
   const lolliInMouth = () => lolliMouth && shop.wearing.includes('lollipop');
+  // A hammer hit: waits for the server and reports on the wrist panel ("HIT: name" / "FAILED: reason")
   async function hammerHit(o) {
-    if (isOwnerUid(o.uid)) { toast('אי אפשר להשתמש בפטיש על הבעלים של המשחק 😉', 2); return; }
+    const name = (o && o.name) || 'player';
+    const fail = why => { hammerSay('FAILED: ' + why, '#ff8a70'); tone(160, 0.15, 'square', 0.08); return 'FAILED: ' + why; };
+    if (!o) return fail('no player');
+    if (isOwnerUid(o.uid)) { toast('אי אפשר להשתמש בפטיש על הבעלים של המשחק 😉', 2); return fail(name + ' is an owner'); }
+    if (!isAdmin()) return fail('not an admin');
+    if (!room) return fail('offline');
     tone(90, 0.3, 'square', 0.2, -40);
-    if (heldHammer === 'KICK') { room.emit('mod', { to: o.peer, a: 'kick' }).catch(() => {}); toast('הוצאת את ' + o.name + ' מהמשחק', 2); }
-    else if (heldHammer === 'KICKS') { room.emit('mod', { to: o.peer, a: 'kicks' }).catch(() => {}); toast('הוצאת את ' + o.name + ' מהחדר', 2); }
-    else if (heldHammer === 'BAN') {
-      if (!o.uid || !db) { toast('אי אפשר לתת באן לשחקן הזה כרגע', 2); return; }
-      try {
-        await db.collection('bans').doc(o.uid).set({ until: Date.now() + 60 * 60 * 1000, name: o.name, by: myUserId });
-        room.emit('mod', { to: o.peer, a: 'ban' }).catch(() => {});
-        toast(o.name + ' קיבל באן לשעה 🔨', 2.5);
-      } catch (e) { toast('לא הצלחתי לתת באן', 2); }
-    }
+    try {
+      if (heldHammer === 'KICK') { await room.emit('mod', { to: o.peer, a: 'kick' }); toast('הוצאת את ' + name + ' מהמשחק', 2); }
+      else if (heldHammer === 'KICKS') { await room.emit('mod', { to: o.peer, a: 'kicks' }); toast('הוצאת את ' + name + ' מהחדר', 2); }
+      else if (heldHammer === 'BAN') {
+        if (!o.uid || !db) return fail('no ID for ' + name);
+        try { await db.collection('bans').doc(o.uid).set({ until: Date.now() + 60 * 60 * 1000, name: String(name).slice(0, 14), by: myUserId }); }
+        catch (e) { return fail('server refused the ban'); }
+        await room.emit('mod', { to: o.peer, a: 'ban' });
+        toast(name + ' קיבל באן לשעה 🔨', 2.5);
+      } else return fail('no hammer');
+    } catch (e) { return fail('server refused'); }
+    hammerSay('HIT: ' + name, '#7ed957');
+    return 'HIT: ' + name;
   }
+  let hammerMsg = '', hammerMsgColor = '#fff', hammerMsgUntil = 0;
+  function hammerSay(msg, color) { hammerMsg = msg; hammerMsgColor = color; hammerMsgUntil = Date.now() + 3500; wristKey = ''; }
   const HAMMER_LABEL = { KICK: 'KICK', BAN: 'BAN', KICKS: 'KICK S' };
   function makeHammer(id) {
     const g = new THREE.Group();
@@ -895,6 +906,7 @@
     const plain = new THREE.MeshStandardMaterial({ color: 0x8e1c1c, roughness: 0.6 });
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, 0.2), [plain, plain, plain, plain, side, side]);
     head.position.y = 0.66; g.add(head);
+    g.userData.head = head;
     return g;
   }
   let myHammer = null;
@@ -937,6 +949,33 @@
     else if (heldHammer === b.id) { setHeld(''); toast('החזרת את הפטיש', 1.5); }
   }
   const _hq = new THREE.Quaternion(), _he = new THREE.Euler(0, 0, 0, 'YXZ');
+  // VR: the handle is at the end of the wing you see (the press point) and the hammer turns with the controller:
+  // its shaft (+Y) points where the controller points (-Z), so flicking the wrist swings the head
+  const HAMMER_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+  const HAMMER_MIN_SPEED = 1.2, HAMMER_COOL = 0.8, HIT_HEAD_R = 0.3, HIT_BODY_R = 0.45;
+  const _hh = new THREE.Vector3(), _hhPrev = new THREE.Vector3(), _hcq = new THREE.Quaternion();
+  let hammerSpeed = 0, hammerCool = 0, hammerPrevOk = false;
+  function poseHammerVR(h, grip, ctrl) {
+    h.position.copy(grip);
+    ctrl.getWorldQuaternion(_hcq); h.quaternion.copy(_hcq).multiply(HAMMER_Q);
+    h.updateMatrixWorld(true);
+  }
+  function hammerHeadWorld(out) { return myHammer.userData.head.getWorldPosition(out); }
+  // one frame of hit detection: the hammer head (world) must touch a player's head or body while swinging fast
+  function hammerSwingCheck(dt, head, speed) {
+    hammerCool = Math.max(0, hammerCool - dt);
+    if (!heldHammer || hammerCool > 0 || speed < HAMMER_MIN_SPEED) return null;
+    // the nearest player the head touches (players standing close together: hit the one you actually swung at)
+    let best = null, bd = Infinity;
+    for (const o of others.values()) {
+      if (!o.ready) continue;
+      const dh = head.distanceTo(o.head.position), db_ = head.distanceTo(o.body.position);
+      if (dh < HIT_HEAD_R || db_ < HIT_BODY_R) { const d = Math.min(dh, db_); if (d < bd) { bd = d; best = o; } }
+    }
+    if (!best) return null;
+    hammerCool = HAMMER_COOL;
+    return hammerHit(best);
+  }
   function poseHammer(h, handWorld, yaw, pitchTilt) {
     h.position.copy(handWorld);
     _he.set(-0.35 + pitchTilt, yaw, 0); h.quaternion.setFromEuler(_he);
@@ -2219,6 +2258,13 @@
     banPrev: () => { banBoardClick({ x: 440 / 512, y: 1 - BAN_FOOT_Y / 320 }); return banPage; },
     banImage: () => { banKey = ''; drawBanBoard(); return banCv.toDataURL('image/png'); },
     banned: () => !!myBan(),
+    holdHammer: id => { setHeld(id); return heldHammer; },
+    // put the hammer head on a player and run the real per-frame check at a given swing speed
+    swingAt: (uid, speed) => { const o = others.get(uid); if (!o) return Promise.resolve('no such player'); hammerCool = 0;
+      const r = hammerSwingCheck(1 / 72, o.head.position.clone(), speed); return r ? r.then(x => x) : Promise.resolve('no hit'); },
+    hammerMsg: () => (Date.now() < hammerMsgUntil ? hammerMsg : ''),
+    hammerPose: () => { const rh = hands.find(x => x.side === 'right') || hands[1]; poseHammerVR(myHammer, V3(0, 1, 0), rh.ctrl);
+      return JSON.stringify({ grip: myHammer.position.toArray(), head: hammerHeadWorld(V3()).toArray().map(v => Math.round(v * 1000) / 1000) }); },
     typeOwnerId: id => toggleOwnerById(id).then(ok => ok + '|' + kbMsg),
     owners: () => [...ownerIds], isOwner: () => isOwnerUid(myUserId),
     hammerBan: uid => { setHeld('BAN'); return hammerHit(others.get(uid)).then(() => { setHeld(''); return 'done'; }); },
@@ -2790,7 +2836,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v28';
+  const GAME_VERSION = 'v29';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -2838,7 +2884,7 @@
     const kbLine = kbDebug.near
       ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
       : '';
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}`;
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}|${shop.coins}|${micLabel().join()}|${Date.now() < hammerMsgUntil ? hammerMsg : ''}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2864,7 +2910,11 @@
     const coinTxt = '🪙 ' + fmtCoins(shop.coins);
     c.direction = 'ltr'; c.fillStyle = '#ffcf4a'; fitFont(c, coinTxt, 40, 460, F);
     c.fillText(coinTxt, 256, 116); c.direction = 'rtl';
-    if (kbLine) {
+    if (Date.now() < hammerMsgUntil) {
+      // the hammer's last result: "HIT: name" / "FAILED: reason"
+      c.direction = 'ltr'; c.fillStyle = hammerMsgColor; fitFont(c, hammerMsg, 36, 460, F);
+      c.fillText(hammerMsg, 256, 168); c.direction = 'rtl';
+    } else if (kbLine) {
       // near the computer: nearest key, distance (green = in press range), height above touch height, sideways offset
       c.font = `700 34px Consolas, monospace`; c.direction = 'ltr';
       c.fillStyle = kbDebug.dist <= KB_PRESS_R ? '#7ed957' : '#ffb070';
@@ -3735,7 +3785,10 @@
     selfAv.flame.visible = false;
     camera.getWorldDirection(tmp);
     poseAvatar(selfAv, headW.clone(), handPos[0], handPos[1], Math.atan2(-tmp.x, -tmp.z));
-    if (myHammer) poseHammer(myHammer, handPos[1], Math.atan2(-tmp.x, -tmp.z), slapT > 0 ? -0.9 : 0);
+    if (myHammer && inVR) {
+      const rh = hands.find(x => x.side === 'right') || hands[1];
+      poseHammerVR(myHammer, pressPointOf(rh), rh.ctrl);
+    } else if (myHammer) poseHammer(myHammer, handPos[1], Math.atan2(-tmp.x, -tmp.z), slapT > 0 ? -0.9 : 0);
 
     // ---- Room computer ----
     // Button presses (keys, buttons, wrist) and the yellow dot use the END OF THE WING you see (flipperTip, after the
@@ -3766,17 +3819,13 @@
     if (infectMode !== wasInfect && started) toast(infectMode ? 'יש 4 שחקנים: מצב הדבקה! מי שנתפס עוזר לתפוס 🔥' : 'חזרנו לתופסת רגילה', 3);
 
     // ---- Hammer hits (admins) ----
-    if (heldHammer && slapT > 0.08 && !hammerHitThisSwing && room && isAdmin()) {
-      for (const o of others.values()) {
-        if (!o.ready) continue;
-        const hitIt = handPos.some(p => p.distanceTo(o.body.position) < 0.65 || p.distanceTo(o.head.position) < 0.5);
-        if (!hitIt) continue;
-        hammerHitThisSwing = true;
-        hammerHit(o);
-        break;
-      }
-    }
-    if (slapT <= 0) hammerHitThisSwing = false;
+    if (myHammer && inVR) {
+      // speed of the hammer head, then the hit check
+      hammerHeadWorld(_hh);
+      const inst = hammerPrevOk && dt > 0 ? _hh.distanceTo(_hhPrev) / dt : 0;
+      hammerSpeed = hammerSpeed * 0.5 + inst * 0.5; _hhPrev.copy(_hh); hammerPrevOk = true;
+      hammerSwingCheck(dt, _hh, hammerSpeed);
+    } else hammerPrevOk = false;
 
     // ---- Tagging ----
     if (myIt) {
