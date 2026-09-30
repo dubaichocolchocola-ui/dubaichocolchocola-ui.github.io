@@ -901,6 +901,22 @@
   }
   const isAdmin = () => !!myUserId && (myUserId === OWNER_ID || adminIds.has(myUserId));
   const isAdminUid = uid => !!uid && (uid === OWNER_ID || adminIds.has(uid));
+  // The uid shown as this player's ID: the server account when there is one, otherwise (the APK, no server) a random
+  // local uid made once and kept in localStorage, so each headset has a fixed ID even offline. Display only: it never
+  // grants admin and is never sent as the account uid.
+  let localUid = null;
+  function myIdUid() {
+    if (myUserId) return myUserId;
+    if (!localUid) {
+      try { localUid = localStorage.getItem('forestTagLocalUid'); } catch (e) {}
+      if (!localUid || !/^local_[0-9a-z]{16}$/.test(localUid)) {
+        const b = new Uint8Array(16); crypto.getRandomValues(b);
+        localUid = 'local_' + Array.from(b, x => (x % 36).toString(36)).join('');
+        try { localStorage.setItem('forestTagLocalUid', localUid); } catch (e) {}
+      }
+    }
+    return localUid;
+  }
   // Player ID: 10 letters/digits, always the same for the same uid (identical to the claude.ai version)
   function idOf(uid) {
     if (!uid) return '';
@@ -1112,10 +1128,13 @@
   pcGroup.add(screen);
   pcGroup.updateMatrixWorld(true);
   // Solid parts: desk and the PC box
+  let deskCollider = null;
   ['Cube', 'Cube.031'].forEach(n => {
     if (!pcParts[n]) return;
     const bb = new THREE.Box3().setFromObject(pcParts[n]);
-    colliders.push({ min: bb.min.clone(), max: bb.max.clone() });
+    const c = { min: bb.min.clone(), max: bb.max.clone() };
+    colliders.push(c);
+    if (n === 'Cube') deskCollider = c;
   });
   let kbText = '', kbMsg = '', kbMsgColor = '#7ed957', kbMsgTimer = 0, kbBlink = 0, kbMode = 'code';
   function drawMonitor() {
@@ -1126,10 +1145,9 @@
     const label = kbMode === 'name' ? 'NAME:' : kbMode === 'color' ? 'COLOR:' : kbMode === 'id' ? 'YOUR ID:' : 'CODE:';
     c.fillText(label, 28, 60);
     if (kbMode === 'id') {
-      const id = idOf(myUserId);
-      c.fillStyle = id ? '#ffcf4a' : '#c8c8c8';
-      c.font = id ? '700 76px Consolas, monospace' : '700 40px Consolas, monospace'; // 76px: 10 characters fit the screen
-      c.fillText(id || 'NO ID (OFFLINE)', 28, 150);
+      c.fillStyle = '#ffcf4a';
+      c.font = '700 76px Consolas, monospace'; // 76px: 10 characters fit the screen
+      c.fillText(idOf(myIdUid()), 28, 150);
     } else if (kbMode === 'color') {
       c.fillStyle = myColor; c.fillRect(28, 100, 90, 60);
       c.strokeStyle = '#ffffff'; c.lineWidth = 3; c.strokeRect(28, 100, 90, 60);
@@ -1253,8 +1271,8 @@
   }
   function showMyId() {
     kbMode = 'id'; kbText = ''; kbMsg = ''; applyKeyLabels(); drawMonitor();
-    const id = idOf(myUserId);
-    if (id && db) db.collection('ids').doc(id).set({ uid: myUserId, name: myName, at: Date.now() }).catch(() => {});
+    // only a real server account is registered; the offline local uid stays on this headset
+    if (myUserId && db) db.collection('ids').doc(idOf(myUserId)).set({ uid: myUserId, name: myName, at: Date.now() }).catch(() => {});
   }
   function setMyName(text) {
     myName = cleanName((text || '').trim());
@@ -1283,19 +1301,53 @@
       m.position.y = u.baseY - (u.press > 0 ? 0.012 : 0);
     }
     // VR: real hand positions (handWorld); each hand presses its nearest key within KB_PRESS_R
-    if (handPoints) for (const f of vrPressNearest('key', handPoints, kbKeys, kbTouchPoint, KB_PRESS_R, 0)) {
-      vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15);
-    }
+    if (handPoints) {
+      measureKeyboard(handPoints);
+      for (const f of vrPressNearest('key', handPoints, kbKeys, kbTouchPoint, KB_PRESS_R, 0, KB_RELEASE_R)) { vrActions.key(f.item); buzz(f.t.h.pad, 0.25, 15); }
+    } else kbDebug.near = false;
   }
   // Each hand presses only its nearest key within KB_PRESS_R, once per touch (move the hand KB_PRESS_R + 3 cm away to
   // press it again). Distance is measured to where a hand touching that key actually is: a hand on the desk is held
-  // HAND_R above the desk top by the locomotion, ~9 cm above the key centres, so it could never get 7 cm from a centre.
-  const KB_PRESS_R = 0.07;
-  let kbTouchY = null;
+  // HAND_R above the desk top by the locomotion, ~9 cm above the key centres.
+  const KB_PRESS_R = 0.07, KB_RELEASE_R = 0.16; // release: the hand has to come 16 cm off the key to press it again
+  // Hands and the keyboard: the hand's HAND_R (10 cm) collision sphere touches the desk top before the hand reaches a
+  // key, and a touching hand is planted (pushing it just moves the body). Reaching in at 45° it planted ~9 cm short of
+  // the key, at 20° ~25 cm short, so keys couldn't be pressed. Over the keyboard area the desk is therefore not solid
+  // for HANDS (feet/body/head still collide with it everywhere), and presses are measured to the top of the key.
+  let kbZone = null;
+  function keyboardZone() {
+    if (!kbZone) {
+      kbZone = new THREE.Box3();
+      kbKeys.forEach(m => kbZone.union(_kbb.setFromObject(m)));
+      kbZone.expandByVector(V3(0.08, 0, 0.08));
+      kbZone.min.y -= 0.35; kbZone.max.y += 0.45;
+    }
+    return kbZone;
+  }
+  const _kbb = new THREE.Box3();
+  const handProbeSkip = p => (deskCollider && keyboardZone().containsPoint(p) ? deskCollider : null);
+  // Live measurement for the wrist panel and window.__kbDebug: the hand closest to any key, its nearest key, the
+  // distance, and how far the hand is above (+) / below (-) the touch height and off to the side of the key.
+  const kbDebug = { near: false, key: '', dist: 0, dy: 0, side: 0, hand: '', touching: false, normalY: 0 };
+  window.__kbDebug = kbDebug;
+  function measureKeyboard(pts) {
+    let best = null;
+    for (const t of pts) for (const m of kbKeys) {
+      const c = kbTouchPoint(m, _kd);
+      const d = t.p.distanceTo(c);
+      if (!best || d < best.d) best = { d, m, t, dy: t.p.y - c.y, side: Math.hypot(t.p.x - c.x, t.p.z - c.z) };
+    }
+    kbDebug.near = !!best && best.d < 1.0;
+    if (!best) return;
+    kbDebug.key = String(best.m.userData.value); kbDebug.dist = best.d; kbDebug.dy = best.dy; kbDebug.side = best.side;
+    kbDebug.hand = best.t.h.side || ''; kbDebug.touching = !!best.t.h.touch; kbDebug.normalY = best.t.h.touch ? best.t.h.normal.y : 0;
+  }
+  const _kd = new THREE.Vector3();
+  // press target: the centre of the key's top face (at rest, cached once so the press animation doesn't move it)
   function kbTouchPoint(m, out) {
-    if (kbTouchY === null) kbTouchY = new THREE.Box3().setFromObject(pcParts['Cube']).max.y + HAND_R;
-    m.getWorldPosition(out); out.y = kbTouchY;
-    return out;
+    const u = m.userData;
+    if (!u.topPt) { const b = new THREE.Box3().setFromObject(m); u.topPt = b.getCenter(V3()); u.topPt.y = b.max.y + (u.press > 0 ? 0.012 * PC_S : 0); }
+    return out.copy(u.topPt);
   }
   let lastBlink = -1;
   const _kw = new THREE.Vector3();
@@ -1341,7 +1393,7 @@
   const ROW_Y0 = 44, ROW_H = 47;
   const BTN_MUTE = [16, 92], BTN_REP = [100, 170];
   function drawPlayerList() {
-    const list = [{ name: myName, color: myColor, it: myIt, me: true, uid: myUserId }];
+    const list = [{ name: myName, color: myColor, it: myIt, me: true, uid: myIdUid() }];
     others.forEach((o, peer) => { if (o.ready) list.push({ name: o.name, color: o.color, it: o.it, me: false, peer, uid: o.uid }); });
     const key = roomCode + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
     if (key === lastListKey) return;
@@ -1427,13 +1479,13 @@
   }
   // Per hand: the nearest item within r fires once when the hand arrives at it; the hand keeps "holding" that item
   // until it moves r + 3 cm away, so resting on a button doesn't repeat.
-  function vrPressNearest(group, pts, items, centerOf, r, cool) {
+  function vrPressNearest(group, pts, items, centerOf, r, cool, release = r + 0.03) {
     const fired = [];
     for (const t of pts) {
       const sk = group + '|' + t.h.side;
       let st = vrPress.get(sk);
       if (!st) vrPress.set(sk, st = { cur: null });
-      if (st.cur) { const c = centerOf(st.cur, _vc); if (c && t.p.distanceTo(c) < r + 0.03) continue; st.cur = null; }
+      if (st.cur) { const c = centerOf(st.cur, _vc); if (c && t.p.distanceTo(c) < release) continue; st.cur = null; }
       let best = null, bd = r;
       for (const it of items) { const c = centerOf(it, _vc); if (!c) continue; const d = t.p.distanceTo(c); if (d < bd) { bd = d; best = it; } }
       if (!best) continue;
@@ -1489,6 +1541,15 @@
       ok('idOf: different uid -> different ID', idOf(otherUid) !== id, idOf(otherUid));
       ok('idOf: no uid -> empty', idOf('') === '' && idOf(null) === '');
       ok('keyboard: ADMIN key gone, ID key present', !kbKeys.some(m => /ADMIN/.test(m.userData.value)) && !!key('MID'));
+      // offline (APK): no account -> a random local uid made once, kept in localStorage, same ID every time
+      myUserId = null;
+      const offId = idOf(myIdUid());
+      let stored = null; try { stored = localStorage.getItem('forestTagLocalUid'); } catch (e) {}
+      ok('offline: ID exists without a server', /^[0-9A-Z]{10}$/.test(offId), offId);
+      ok('offline: local uid saved in localStorage', stored === myIdUid() && /^local_[0-9a-z]{16}$/.test(stored || ''), stored || 'none');
+      localUid = null; // as if the app restarted: must read the same uid back
+      ok('offline: same ID after a restart', idOf(myIdUid()) === offId);
+      ok('offline: local uid is never an admin', !isAdmin() && !isAdminUid(myIdUid()));
       myUserId = fakeUid; kbText = 'ABC';
       press('MID');
       ok('ID key -> ID screen', kbMode === 'id');
@@ -1513,13 +1574,42 @@
       others.set('__test', { ready: true, name: 'דני', color: '#ffcf4a', it: false, uid: otherUid });
       lastListKey = ''; drawPlayerList(); board = listCv.toDataURL('image/png');
       ok('board shows both players', boardList.length === 2 && boardList[1].uid === otherUid);
+      // Keyboard reach: move a hand toward key L like the VR hand locomotion does (probe with HAND_R; once touching,
+      // the body moves so the hand stays on the anchor) and see where it stops relative to the key's touch point.
+      const kL = key('L'), pL = kbTouchPoint(kL, V3()), deskTop = deskCollider.max.y;
+      const approach = (label, from) => {
+        // aim 5 cm into the key and follow the path like the VR hand: it stops (plants) at the first probe hit
+        const target = pL.clone().add(V3(0, -0.05, 0));
+        const cur = from.clone(), dir = target.clone().sub(from), len = dir.length(); dir.normalize();
+        let stopped = null, bestD = Infinity, bestKey = null;
+        for (let s = 0; s <= len && !stopped; s += 0.005) {
+          cur.copy(from).addScaledVector(dir, s);
+          const hit = probe(cur, HAND_R, handProbeSkip(cur));
+          if (hit) { stopped = hit; break; }
+          let nk = null, nd = Infinity; kbKeys.forEach(m => { const d = cur.distanceTo(kbTouchPoint(m, _vc)); if (d < nd) { nd = d; nk = m; } });
+          if (nd < bestD) { bestD = nd; bestKey = nk; }
+        }
+        ok('reach L ' + label + ': closest ' + (bestD * 100).toFixed(1) + ' cm, nearest key ' + (bestKey ? bestKey.userData.value : '-'),
+          bestD <= KB_PRESS_R && bestKey === kL, stopped ? 'stopped on a surface, normal ' + stopped.normal.toArray().join(',') : 'hand not stopped before the key');
+      };
+      approach('from straight above', pL.clone().add(V3(0, 0.5, 0)));
+      // from where a player stands in front of the computer, reaching forward and down with the hand
+      const pcFront = V3(COMPUTER.x, 0, COMPUTER.z), toKey = kL.getWorldPosition(V3()).sub(pcFront).setY(0).normalize();
+      approach('from the player at 45°', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.45).add(V3(0, 0.45, 0)));
+      approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
+      out.push({ label: 'desk top y ' + deskTop.toFixed(3) + ', key L centre y ' + kL.getWorldPosition(V3()).y.toFixed(3) + ', touch y ' + pL.y.toFixed(3), ok: true, info: '' });
     } finally {
       others.delete('__test');
       myUserId = saved.uid; kbMode = saved.mode; kbText = saved.text;
       adminIds.clear(); saved.admins.forEach(x => adminIds.add(x));
       applyKeyLabels(); drawMonitor(); lastListKey = '';
     }
-    return { results: out, monitor, board };
+    // wrist panel with the keyboard measurement line (drawWrist only runs in VR, so render it here once)
+    const savedKb = Object.assign({}, kbDebug);
+    Object.assign(kbDebug, { near: true, key: 'L', dist: 0.042, dy: 0.018, side: 0.038, hand: 'right', touching: false });
+    wristKey = ''; drawWrist(1, true); const wristImg = wristCv.toDataURL('image/png');
+    Object.assign(kbDebug, savedKb); wristKey = '';
+    return { results: out, monitor, board, wrist: wristImg };
   };
   // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
   // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
@@ -1556,9 +1646,12 @@
         const mid = pL.clone().lerp(pK, 0.5);
         world([{ p: far.clone(), h: R }]); world([{ p: mid, h: R }]);
         results.push({ kind: 'keyL', label: 'exactly between K and L (' + (pL.distanceTo(pK) / 2 * 100).toFixed(1) + ' cm from each) presses nothing', ok: rec.length === 0, fired: rec.map(r => r.a[0].userData.value).join(',') || '-', repeats: 0, again: 0 });
-        // why the old key-centre distance couldn't work: a hand resting on L vs L's centre
-        const c = kL.getWorldPosition(V3());
-        results.push({ kind: 'keyL', label: 'resting hand is ' + (pL.distanceTo(c) * 100).toFixed(1) + ' cm above L centre (> 7 cm)', ok: pL.distanceTo(c) > KB_PRESS_R, fired: '-', repeats: 0, again: 0 });
+        // pushing the hand 12 cm down through L (the desk doesn't stop hands over the keyboard) = one press
+        vrPress.clear(); vrCool.clear(); rec.length = 0;
+        world([{ p: far.clone(), h: R }]);
+        for (let dy = 0.15; dy >= -0.12; dy -= 0.01) world([{ p: pL.clone().add(V3(0, dy, 0)), h: R }]);
+        for (let dy = -0.12; dy <= 0.15; dy += 0.01) world([{ p: pL.clone().add(V3(0, dy, 0)), h: R }]);
+        results.push({ kind: 'keyL', label: 'push 12 cm down through L and back up = one press', ok: rec.length === 1 && rec[0].a[0] === kL, fired: rec.map(r => r.a[0].userData.value).join(',') || '-', repeats: 0, again: 0 });
         // once per touch: slide off by 2 cm and back without lifting -> no second press
         vrPress.clear(); vrCool.clear(); rec.length = 0;
         world([{ p: far.clone(), h: R }]); world([{ p: pL.clone(), h: R }]);
@@ -1594,11 +1687,13 @@
   };
 
   // ================= Collision helpers =================
-  function probe(p, r) {
+  // skip (optional): colliders to ignore for this probe (used by the hands over the keyboard)
+  function probe(p, r, skip = null) {
     let best = null;
     const adm = isAdmin();
     for (const c of colliders) {
       if (c.admin && adm) continue; // admin-only door: solid for everyone else
+      if (skip && c === skip) continue;
       if (p.x < c.min.x - r || p.x > c.max.x + r || p.y < c.min.y - r || p.y > c.max.y + r || p.z < c.min.z - r || p.z > c.max.z + r) continue;
       const pens = [
         [p.x - (c.min.x - r), V3(-1, 0, 0), c.min.x - r, 'x'],
@@ -2042,7 +2137,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v14';
+  const GAME_VERSION = 'v15';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2069,7 +2164,10 @@
   }
   function drawWrist(players, solo) {
     const calibrating = calibT >= 0;
-    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}`;
+    const kbLine = kbDebug.near
+      ? `${kbDebug.key} ${(kbDebug.dist * 100).toFixed(1)}cm  ↕${kbDebug.dy >= 0 ? '+' : ''}${(kbDebug.dy * 100).toFixed(1)} ↔${(kbDebug.side * 100).toFixed(1)}${kbDebug.touching ? ' ✋' : ''}`
+      : '';
+    const key = `${myIt}|${myImm > 0}|${players}|${solo}|${calibrating}|${calBtnHover}|${Math.round(view.position.y * 100)}|${kbLine}`;
     if (key === wristKey) return;
     wristKey = key;
     const c = wristCv.getContext('2d');
@@ -2085,8 +2183,16 @@
     c.fillStyle = '#fff'; c.direction = 'rtl'; c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `900 72px ${F}`;
     c.fillText(myIt ? 'אתה התופס' : myImm > 0 ? 'מוגן' : 'ברח!', 256, 82);
-    c.font = `700 40px ${F}`; c.fillStyle = '#ffe9a8';
-    c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 160);
+    if (kbLine) {
+      // near the computer: nearest key, distance (green = in press range), height above touch height, sideways offset
+      c.font = `700 34px Consolas, monospace`; c.direction = 'ltr';
+      c.fillStyle = kbDebug.dist <= KB_PRESS_R ? '#7ed957' : '#ffb070';
+      c.fillText(kbLine, 256, 160);
+      c.direction = 'rtl';
+    } else {
+      c.font = `700 40px ${F}`; c.fillStyle = '#ffe9a8';
+      c.fillText(solo ? 'משחק עם בוטים' : `${players} שחקנים ביער`, 256, 160);
+    }
     // Version + arm length, so it's obvious in the headset which build is running
     c.font = `700 28px ${F}`; c.fillStyle = 'rgba(255,255,255,0.75)'; c.direction = 'ltr';
     c.fillText(`${GAME_VERSION} · arms ×${ARM_REACH} · height ${view.position.y >= 0 ? '+' : ''}${view.position.y.toFixed(2)}m`, 256, 220);
@@ -2472,7 +2578,8 @@
           if (diff.dot(h.normal) > 0.02) { h.touch = false; h.cooldown = 0.08; }
           else { move.add(h.anchor.clone().sub(cur)); count++; }
         } else if (h.cooldown <= 0) {
-          const hit = probe(cur, HAND_R);
+          // over the keyboard the desk doesn't stop the hand, so it can reach the keys (see handProbeSkip)
+          const hit = probe(cur, HAND_R, handProbeSkip(cur));
           if (hit) {
             h.touch = true; h.anchor.copy(hit.surface); h.normal.copy(hit.normal);
             move.add(h.anchor.clone().sub(cur)); count++;
