@@ -116,6 +116,12 @@
 
 <div id="hud"><div id="hudStatus" class="run" style="visibility:hidden"></div><div id="hudPlayers"></div><div id="hudCoins">🪙 0</div><button id="exitBtn">יציאה</button></div>
 <div id="cross"></div>
+<div id="vrOnly" hidden style="position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;text-align:center;background:linear-gradient(0deg,rgba(10,22,10,.94),rgba(10,22,10,.72))">
+  <div style="font-size:64px" aria-hidden="true">🥽</div>
+  <h1 style="margin:0;font-weight:900;font-size:clamp(34px,7vw,64px);color:#ffcf4a;line-height:1.1">המשחק עובד רק במשקפי VR</h1>
+  <p style="margin:0;max-width:30em;color:#dfe9d4;font-size:clamp(16px,2.4vw,20px);line-height:1.6">תופסת ביער היא משחק למשקפי <span style="unicode-bidi:isolate;direction:ltr">Meta Quest</span>. אפשר להוריד אותו למשקפיים מדף ההורדה.</p>
+  <a href="download/" style="display:inline-block;font-weight:900;font-size:24px;padding:18px 44px;border-radius:999px;background:#ffcf4a;color:#2a1a05;text-decoration:none">לדף ההורדה</a>
+</div>
 <button id="vrBig" hidden style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;font:inherit;font-weight:900;font-size:clamp(28px,6vw,48px);padding:28px 56px;border-radius:999px;border:0;background:#ffcf4a;color:#2a1a05;cursor:pointer;box-shadow:0 10px 40px rgba(0,0,0,.45)">🥽 היכנס ל-VR</button>
 <div id="lockhint">לחץ על המסך כדי להסתכל עם העכבר</div>
 <div id="help">WASD הליכה · עכבר הסתכלות · רווח קפיצה (ליד קיר: קפיצת קיר) · Shift ריצה · לחיצה או F לתפוס · E ליד המחשב: קוד חדר · Q סוכרייה לפה</div>
@@ -1263,11 +1269,14 @@
     // room line under the typing line: PUBLIC / the room code, or OFFLINE without a server (e.g. the APK)
     let rl = 'OFFLINE';
     try { rl = room ? (roomCode ? roomCode.toUpperCase() : 'PUBLIC') : 'OFFLINE'; } catch (e) {} // room is declared further down
-    c.font = '700 34px Consolas, monospace'; c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa';
-    c.fillText('ROOM: ' + rl, 28, 255);
+    c.font = '700 34px Consolas, monospace';
+    if (kbMsg) { c.fillStyle = kbMsgColor; c.fillText(kbMsg, 28, 255); } // a join result for a few seconds
+    else { c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa'; c.fillText('ROOM: ' + rl, 28, 255); }
     monTex.needsUpdate = true;
   }
   function kbSay(msg) { toast(msg, 2.5); }
+  // a line on the computer screen, in place of the ROOM line, for a few seconds
+  function monSay(text, color, secs = 5) { kbMsg = text; kbMsgColor = color; kbMsgTimer = secs; drawMonitor(); }
 
   // ---- Keys: the player's own keys + a number row ----
   const kbKeys = [];
@@ -1399,13 +1408,13 @@
     if (!lobby) { kbSay('אין חיבור אונליין כרגע', '#ff8a70'); return; }
     kbSay('מתחבר…', '#c8f5b0', 10);
     const ok = await switchRoom(code);
-    if (ok === 'full') { kbSay('החדר מלא! כבר יש בו 10 שחקנים', '#ff8a70', 5); return; }
-    if (ok) { kbSay('נכנסת לחדר ' + code.toUpperCase() + '!', '#aaffaa', 4); tagSound(); kbText = ''; drawMonitor(); }
+    if (ok === 'full') { kbSay('החדר מלא! כבר יש בו 10 שחקנים', '#ff8a70', 5); monSay('ROOM FULL', '#ff4a3a'); return; }
+    if (ok) { kbSay('נכנסת לחדר ' + code.toUpperCase() + '!', '#aaffaa', 4); tagSound(); kbText = ''; monSay('JOINED ROOM: ' + code.toUpperCase(), '#aaffaa'); }
     else kbSay('לא הצלחתי להיכנס. נסה שוב', '#ff8a70');
   }
   function updateKeyboard(dt, handPoints) {
     kbBlink = Math.floor(performance.now() / 500);
-    if (kbMsgTimer > 0) { kbMsgTimer -= dt; if (kbMsgTimer <= 0) kbMsg = ''; }
+    if (kbMsgTimer > 0) { kbMsgTimer -= dt; if (kbMsgTimer <= 0) { kbMsg = ''; drawMonitor(); } }
     for (const m of kbKeys) {
       const u = m.userData;
       u.cool = Math.max(0, u.cool - dt);
@@ -1766,6 +1775,7 @@
       // Keyboard reach: move a hand toward key L like the VR hand locomotion does (probe with HAND_R; once touching,
       // the body moves so the hand stays on the anchor) and see where it stops relative to the key's touch point.
       const kL = key('L'), pL = kbTouchPoint(kL, V3()), deskTop = deskCollider.max.y;
+      ensureSelfAv();
       const approach = (label, from) => {
         // move the WING TIP (the press point) 5 cm into the key, solving at each step for the hand position that puts
         // the posed tip there; the hand (probe with HAND_R) plants at its first surface hit
@@ -1796,6 +1806,7 @@
       approach('from the player, low (20°)', kL.getWorldPosition(V3()).addScaledVector(toKey, -0.6).add(V3(0, 0.22, 0)));
       // press point = the end of the wing you see: pose the first-person penguin toward hand targets, then compare the
       // press point with the wing end measured independently from the posed wing's world vertices
+      ensureSelfAv();
       if (selfAv && selfAv.penguin) {
         const head = pL.clone().add(V3(0, 0.55, 0.45)), yaw = 0;
         const configs = [['hand on key L', pL.clone(), pL.clone().add(V3(0.5, 0, 0))],
@@ -1823,6 +1834,7 @@
       // wardrobe buttons + shop items: moving the WING TIP (the press point) toward the object's padded box from in
       // front of it, does it get in before the HAND behind the wing (probe with HAND_R) is planted on a surface?
       {
+        ensureSelfAv();
         const reach = (box, center, dir, lift) => {
           const from = center.clone().addScaledVector(dir, 0.8).add(V3(0, lift, 0)), to = center.clone();
           const P = V3(), len = from.distanceTo(to);
@@ -2015,7 +2027,38 @@
         kbMode = saved.mode; drawMonitor(); badgeKey = ''; refreshBadgeBoard();
       }
     }
+    // ---- VR only: no computer mode ----
+    ok('VR only: no computer mode after start (deskMode off, HUD hidden)', !deskMode && $('hud').style.display !== 'flex' && $('deskBtn').hidden);
+    const kbWas = keys.KeyW;
+    dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'w' }));
+    ok('VR only: W does nothing', keys.KeyW === kbWas);
+    dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', key: 'w' }));
+    if (vrChecked && !hasVR) {
+      const a = $('vrOnly').querySelector('a');
+      ok('no VR here: the "VR only" screen shows, with a link to the download page', !$('vrOnly').hidden && /המשחק עובד רק במשקפי VR/.test($('vrOnly').textContent) && a && /\/download\/$/.test(a.href), a ? a.href : 'no link');
+    }
     return { results: out, monitor, board, wrist: wristImg, shop: shopImg, imgs };
+  };
+  window.__roomMsgTest = async () => {
+    const out = [], imgs = {};
+    const savedJoin = switchRoom, savedLobby = lobby, savedMode = kbMode;
+    try {
+      kbMode = 'code';
+      lobby = lobby || {};
+      switchRoom = async () => 'full';
+      await joinWithCode('abc123');
+      out.push({ label: 'room full -> "ROOM FULL" in red on the screen', ok: kbMsg === 'ROOM FULL' && /^#ff/i.test(kbMsgColor), info: kbMsg + ' ' + kbMsgColor });
+      imgs.monitorFull = monCv.toDataURL('image/png');
+      switchRoom = async () => true;
+      await joinWithCode('abc123');
+      out.push({ label: 'joined -> "JOINED ROOM: ABC123" on the screen', ok: kbMsg === 'JOINED ROOM: ABC123', info: kbMsg });
+      imgs.monitorJoined = monCv.toDataURL('image/png');
+      kbMsgTimer = 0.001; updateKeyboard(0.01, null);
+      out.push({ label: 'after a few seconds the ROOM line comes back', ok: kbMsg === '' });
+    } finally {
+      switchRoom = savedJoin; lobby = savedLobby; kbMode = savedMode; kbMsg = ''; kbMsgTimer = 0; drawMonitor();
+    }
+    return { results: out, imgs };
   };
   // Self-test for every in-world button, run from the console / DevTools: a simulated right hand arrives at the
   // button, rests on it, leaves, and comes back. Presses are recorded, not performed (nothing is bought/typed/kicked).
@@ -2560,7 +2603,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v21';
+  const GAME_VERSION = 'v22';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
@@ -2770,19 +2813,23 @@
     if (d.a === 'kicks') { switchRoom(''); toast('אדמין הוציא אותך מהחדר', 3); }
     else if (d.a === 'kick' || d.a === 'ban') { kickedOut(d.a === 'ban' ? 'קיבלת באן לשעה' : 'אדמין הוציא אותך מהמשחק'); }
   }
+  // kicked / banned: leave VR (there is no computer mode) and show the message on the start screen
   function kickedOut(msg) {
     setHeld('');
     stopDesk();
     const km = document.getElementById('kickMsg'); km.textContent = msg; km.hidden = false;
+    $('overlay').classList.remove('hidden'); $('vrBig').hidden = true;
+    if (renderer.xr.isPresenting) { const s = renderer.xr.getSession(); if (s) s.end().catch(() => {}); }
   }
   function myBan() { return myUserId ? bans.find(b => b.id === myUserId && b.until > Date.now()) : null; }
   function checkBan() {
     const b = myBan(), btn = document.getElementById('deskBtn'), km = document.getElementById('kickMsg');
     if (b) {
       const mins = Math.ceil((b.until - Date.now()) / 60000);
-      if (deskMode) kickedOut('קיבלת באן');
+      if (deskMode || renderer.xr.isPresenting) kickedOut('קיבלת באן');
       btn.disabled = true; km.hidden = false; km.textContent = 'יש לך באן. תוכל לחזור לשחק בעוד ' + mins + ' דקות';
-    } else if (btn.disabled) { btn.disabled = false; km.hidden = true; }
+      $('overlay').classList.remove('hidden'); $('vrBig').hidden = true; // no way into VR while banned
+    } else if (btn.disabled) { btn.disabled = false; km.hidden = true; $('overlay').classList.add('hidden'); showVrBig(); }
   }
   setInterval(() => { checkBan(); drawBanBoard(); }, 15000);
   function onTagMsg(msg) {
@@ -2856,6 +2903,17 @@
   const ARM_REACH = 1.5, SHOULDER_SIDE = 0.2, SHOULDER_DOWN = 0.25;
   const _hwFwd = V3(), _hwRight = V3(1, 0, 0), _hwShoulder = V3();
   // where hand h presses things: the tip of its first-person wing (falls back to the hand itself without a penguin body)
+  function ensureSelfAv() {
+    if (!selfAv || selfAv.color !== myColor || selfAv.style !== myStyle) {
+      if (selfAv) disposeAvatar(selfAv);
+      selfAv = makeAvatar(myColor, '', false, myStyle);
+      selfAv.head.visible = false;
+      if (selfAv.cosmetics) selfAv.cosmetics.visible = false;
+      selfAv.torso.visible = false;
+      selfAv.root.traverse(o => o.layers.set(4));
+    }
+    return selfAv;
+  }
   function pressPointOf(h) {
     const i = hands.indexOf(h);
     return flipperTip(selfAv, i, V3()) || handWorld(h, V3());
@@ -3131,14 +3189,7 @@
       h.visual.visible = false;
     });
     // First-person gorilla arms & hands
-    if (!selfAv || selfAv.color !== myColor || selfAv.style !== myStyle) {
-      if (selfAv) disposeAvatar(selfAv);
-      selfAv = makeAvatar(myColor, '', false, myStyle);
-      selfAv.head.visible = false;
-      if (selfAv.cosmetics) selfAv.cosmetics.visible = false;
-      selfAv.torso.visible = false;
-      selfAv.root.traverse(o => o.layers.set(4));
-    }
+    ensureSelfAv();
     { const k0 = selfAv.wearKey; applyCosmetics(selfAv, shop.wearing, lolliInMouth()); if (selfAv.wearKey !== k0) selfAv.root.traverse(o => o.layers.set(4)); selfAv.mouthCos.visible = false; }
     // lollipop: bring the left hand to your mouth to stick it there, do it again to take it back
     if (shop.wearing.includes('lollipop')) {
@@ -3520,23 +3571,19 @@
   function showVrBig() {
     if (!hasVR) return;
     $('vrBig').hidden = false;
+    $('vrBig').style.top = $('kickMsg').hidden ? '50%' : '84%'; // below a kick message, not on top of it
     ['help', 'cross', 'lockhint'].forEach(id => { $(id).style.display = 'none'; });
   }
-  function startDesk() {
+  // The game is VR only: there is no computer (mouse / keyboard / WASD) mode any more. Outside a VR session a headset
+  // gets the big "enter VR" button, and a device without VR gets the "VR only" screen with a link to the download page.
+  let vrChecked = false;
+  function showFlatScreen() {
     if (myBan()) { checkBan(); return; }
-    document.getElementById('kickMsg').hidden = true;
-    initAudio();
-    myName = cleanName($('nameInput').value.trim()); saveName(myName);
-    deskMode = true; started = true;
-    camera.rotation.order = 'YXZ';
-    yaw = 0; pitch = 0;
-    rig.position.copy(spawnPoint());
-    vel.set(0, 0, 0);
-    $('overlay').classList.add('hidden');
-    $('hud').style.display = 'flex';
-    $('help').style.display = 'block';
-    $('cross').style.display = 'block';
-    $('lockhint').style.display = 'block';
+    deskMode = false; started = false;
+    ['hud', 'help', 'cross', 'lockhint'].forEach(id => { $(id).style.display = 'none'; });
+    // keep the start screen up while it shows a kick / ban message
+    $('overlay').classList.toggle('hidden', $('kickMsg').hidden);
+    $('vrOnly').hidden = !(vrChecked && !hasVR);
     showVrBig();
   }
   function stopDesk(showMenu = true) {
@@ -3549,8 +3596,8 @@
     if (showMenu) $('overlay').classList.remove('hidden');
     ['hud', 'help', 'cross', 'lockhint'].forEach(id => { $(id).style.display = 'none'; });
   }
-  $('deskBtn').addEventListener('click', startDesk);
   $('exitBtn').style.display = 'none';
+  $('deskBtn').hidden = true; // no computer mode
   (() => { const vb = $('vrBtn'); vb.className = ''; vb.id = 'vrBtn'; vb.style.cssText = 'pointer-events:auto;font:inherit;font-weight:700;font-size:14px;padding:8px 14px;border-radius:999px;border:0;background:#ffcf4a;color:#2a1a05;cursor:pointer'; $('hud').appendChild(vb); })();
 
 
@@ -3582,6 +3629,7 @@
     let ok = false;
     try { ok = !!navigator.xr && await navigator.xr.isSessionSupported('immersive-vr'); } catch (e) {}
     const b = $('vrBtn');
+    vrChecked = true;
     if (ok) {
       b.hidden = false; b.disabled = false; b.textContent = 'היכנס ב-VR';
       hasVR = true; showVrBig();
@@ -3590,7 +3638,7 @@
     }
     else {
       b.textContent = 'לא נמצאו משקפי VR';
-
+      if (!renderer.xr.isPresenting) showFlatScreen(); // no VR on this device: the "VR only" screen
     }
   })();
 
@@ -3605,6 +3653,7 @@
   let vrStarting = false;
   async function enterVR(silent) {
     if (vrStarting || renderer.xr.isPresenting) return;
+    if (myBan()) { checkBan(); return; }
     vrStarting = true;
     try {
       initAudio();
@@ -3616,6 +3665,7 @@
       session.addEventListener('end', () => { window.__inVR = false; });
       startCalibration();
       $('vrBig').hidden = true;
+      $('kickMsg').hidden = true; // back in the game: an old kick message is done
       $('overlay').classList.add('hidden');
       rig.position.copy(spawnPoint());
       vel.set(0, 0, 0);
@@ -3624,17 +3674,17 @@
         started = false;
         myIt = false;
         if (room) room.presence(CLEAR).catch(() => {});
-        startDesk();
+        showFlatScreen();
       });
     } catch (e) {
-      startDesk();
+      showFlatScreen();
       if (!silent) toast('לא הצלחתי לפתוח VR. נסה לפתוח את הקישור ישירות בדפדפן של המשקפיים.', 4);
     } finally {
       vrStarting = false;
     }
   }
-  // No start screen: go straight into the forest
-  startDesk();
+  // Start: the flat screen (VR button on a headset, "VR only" elsewhere)
+  showFlatScreen();
 })();
 if ('serviceWorker' in navigator) {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
