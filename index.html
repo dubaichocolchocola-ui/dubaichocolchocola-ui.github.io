@@ -3675,7 +3675,13 @@
     pressTurnKey: () => { const k = kbKeys.find(m => m.userData.value === 'MTURN'); if (!k) return null; k.userData.cool = 0; pressKey(k); return turnMode; },
     monitorPng: () => monCv.toDataURL(),
     // a real turn (VR only): returns what the hands did
-    turn: a => { hands.forEach(h => { h.touch = true; }); const r = applyTurn(a); return { turned: r, touch: hands.map(h => h.touch) }; },
+    // a real turn (VR only): the head (in the space and in the world) and where it looks, before and a moment after
+    turn: a => new Promise(res => {
+      const snap = () => { const d = camera.getWorldDirection(V3()); return { local: camera.position.toArray().map(v => +v.toFixed(3)), world: camera.getWorldPosition(V3()).toArray().map(v => +v.toFixed(3)), yawDeg: +(Math.atan2(d.x, -d.z) * 180 / Math.PI).toFixed(1) }; };
+      const before = snap(); hands.forEach(h => { h.touch = true; });
+      const turned = applyTurn(a), touch = hands.map(h => h.touch);
+      setTimeout(() => res({ turned, touch, before, after: snap(), state: { yaw: turnYaw, x: turnPos.x, z: turnPos.z } }), 400);
+    }),
     state: () => ({ yaw: turnYaw, x: turnPos.x, z: turnPos.z, base: !!turnBase }),
     // run the stick logic with a fake right stick; returns the turn angles it asked for
     stick: (x, dt = 1 / 72) => {
