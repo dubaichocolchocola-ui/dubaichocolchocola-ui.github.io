@@ -788,9 +788,9 @@
   };
   // the owner's Firebase uid (found from ids/<the owner's ID> once the owner's headset connected); '' = not set yet.
   // The same uid must be in the rules (OWNER_UID).
-  const FB_OWNER_UID = '' ||
-    // tests against a LOCAL emulator only (?emu=...&testOwner=uid); the real server's rules decide who the owner is
-    ((q => q.get('emu') && q.get('testOwner'))(new URLSearchParams(location.search)) || '');
+  // tests against a LOCAL emulator only (?emu=...&testOwner=uid); the real server's rules decide who the owner is
+  const FB_OWNER_UID = ((q => q.get('emu') && q.get('testOwner'))(new URLSearchParams(location.search))) ||
+    'B3YBPDexm0OFwCTlDyfiprDo2vk1'; // the owner (ID FPIJBTUT54)
   const OWNER_ID = ON_CLAUDE ? 'u_PZxFZFg32GVdUeiw63H77Q' : FB_OWNER_UID;
   const netHz = ON_CLAUDE ? 20 : 10; // presence updates per second (Firebase: 10 to stay inside the free quota)
   const adminIds = new Set();
@@ -2664,7 +2664,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v23';
+  const GAME_VERSION = 'v24';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 96, y: 262, w: 320, h: 70 }; // canvas px
