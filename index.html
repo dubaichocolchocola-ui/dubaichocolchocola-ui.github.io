@@ -247,6 +247,40 @@
     x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
     return (cosTexCache.glow = new THREE.CanvasTexture(c));
   }
+  // ---- creator camera hats: helpers (rounded boxes and real-looking lenses) ----
+  function cosRBox(w, h, d, r) {
+    const s = new THREE.Shape(), x = -w / 2 + r, y = -h / 2 + r, W = w - 2 * r, H = h - 2 * r;
+    s.moveTo(x, y - r); s.lineTo(x + W, y - r); s.quadraticCurveTo(x + W + r, y - r, x + W + r, y); s.lineTo(x + W + r, y + H); s.quadraticCurveTo(x + W + r, y + H + r, x + W, y + H + r); s.lineTo(x, y + H + r); s.quadraticCurveTo(x - r, y + H + r, x - r, y + H); s.lineTo(x - r, y); s.quadraticCurveTo(x - r, y - r, x, y - r);
+    const g = new THREE.ExtrudeGeometry(s, { depth: Math.max(0.001, d - 2 * r * 0.6), bevelEnabled: true, bevelThickness: r * 0.6, bevelSize: r * 0.6, bevelSegments: 3, curveSegments: 5 }); g.center(); return g;
+  }
+  const CAM = {
+    rubber: () => cosMat(0x111114, 0.85, 0), satin: () => cosMat(0x26262c, 0.35, 0.5), leather: () => cosTex('leather', 0x1d1c20),
+    glass: () => new THREE.MeshPhysicalMaterial({ color: 0x0c1428, roughness: 0.03, metalness: 0.3, clearcoat: 1 }),
+    coat: () => new THREE.MeshPhysicalMaterial({ color: 0x6a4cff, roughness: 0.05, metalness: 0.4, clearcoat: 1, transparent: true, opacity: 0.5 }),
+    metal: c => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.22, metalness: 0.75, clearcoat: 0.6, clearcoatRoughness: 0.1 }),
+    brushed: c => cosMat(c, 0.38, 0.7)
+  };
+  function camLens(r, ring, long) {
+    const g = new THREE.Group(); let z = 0; const rubber = CAM.rubber(), satin = CAM.satin();
+    [[r * 1.08, 0.08, ring], [r, long, rubber], [r * 1.04, 0.05, ring], [r * 0.96, 0.1, satin]].forEach(([rr, len, m]) => { const c = new THREE.Mesh(new THREE.CylinderGeometry(rr, rr, len, 32), m); c.rotation.x = Math.PI / 2; c.position.z = -(z + len / 2); g.add(c); z += len; });
+    for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2, rib = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.018, long * 0.8), rubber); rib.position.set(Math.cos(a) * r * 1.01, Math.sin(a) * r * 1.01, -(0.08 + long / 2)); g.add(rib); }
+    const gl = new THREE.Mesh(new THREE.SphereGeometry(r * 0.82, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2.6), CAM.glass()); gl.rotation.x = -Math.PI / 2; gl.position.z = -z + 0.02; g.add(gl);
+    const ar = new THREE.Mesh(new THREE.SphereGeometry(r * 0.83, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2.6), CAM.coat()); ar.rotation.x = -Math.PI / 2; ar.position.z = -z + 0.021; g.add(ar);
+    return g;
+  }
+  function camRec() {
+    const g = new THREE.Group(); const b = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 16), CAM.satin()); b.rotation.x = Math.PI / 2;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshStandardMaterial({ color: 0xff2a2a, emissive: 0xff1010, emissiveIntensity: 1.5 }));
+    m.position.z = -0.015; m.onBeforeRender = () => { m.material.emissiveIntensity = Math.sin(performance.now() * 0.005) > 0 ? 1.6 : 0.1; };
+    g.add(b, m); return g;
+  }
+  function camPlate(txt, bgc, fg, w) {
+    const key = 'plate' + txt + bgc; let t = cosTexCache[key];
+    if (!t) { const c = document.createElement('canvas'); c.width = 256; c.height = 96; const x = c.getContext('2d'); x.fillStyle = bgc; x.fillRect(0, 0, 256, 96); x.fillStyle = fg; x.font = '900 60px Rubik, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(txt, 128, 52); t = cosTexCache[key] = new THREE.CanvasTexture(c); }
+    return new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.375), new THREE.MeshStandardMaterial({ map: t, roughness: 0.3, metalness: 0.3 }));
+  }
+  const camSpin = (obj, axis) => { const first = obj.children.find(c => c.isMesh); if (first) first.onBeforeRender = () => { obj.rotation[axis] = performance.now() * 0.002; }; };
+
 
   const SHOP_ITEMS = [
     { id: 'tophat', name: 'כובע צילינדר', price: 40, icon: '🎩', dispY: -0.44, build: () => fromCos('tophat', 0.8, 0.66 - COS.tophat.minY * 0.8) },
@@ -505,6 +539,86 @@
       for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; if (Math.abs(Math.sin(a) + 1) < 0.3) continue; const d = new THREE.Mesh(new THREE.OctahedronGeometry(0.025), new THREE.MeshStandardMaterial({ color: 0xbfe3ff, emissive: 0x6fb6ff, emissiveIntensity: 0.6, roughness: 0.05 })); d.position.set(Math.cos(a) * 0.56, 0.62, Math.sin(a) * 0.56); g.add(d); }
       const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0x6fb6ff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.7 })); glow.scale.setScalar(0.5); glow.position.set(0, 0.84, -0.56); g.add(glow);
       gem.onBeforeRender = () => { const t = performance.now() * 0.003; gem.rotation.y = t * 0.6; glow.material.opacity = 0.5 + 0.3 * Math.sin(t * 1.5); };
+      return g; } },
+    // ---------- creator hats: given by the owner from the forest computer (ROLE), for video views ----------
+    { id: 'creator_bronze', name: 'כובע יוצר ארד', price: 0, icon: '🥉', exclusive: 'creator', tier: 1, build: () => {
+      const g = new THREE.Group(), m = CAM.metal(0xb8693a);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.63, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2), CAM.brushed(0x9c5a30)); dome.position.y = 0.4;
+      for (let i = 0; i < 6; i++) { const seam = new THREE.Mesh(new THREE.TorusGeometry(0.632, 0.009, 6, 32, Math.PI / 2), m); seam.rotation.y = i * Math.PI / 3; seam.position.y = 0.4; g.add(seam); }
+      const bill = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.035, 40, 1, false, Math.PI / 2, Math.PI), m); bill.position.set(0, 0.45, -0.46); bill.rotation.x = 0.14;
+      const btn = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 12), m); btn.position.y = 1.02; g.add(dome, bill, btn);
+      const cam = new THREE.Group(); cam.position.set(0, 1.27, 0.02);
+      const body = new THREE.Mesh(cosRBox(0.7, 0.38, 0.32, 0.06), CAM.leather()); const top = new THREE.Mesh(cosRBox(0.7, 0.1, 0.32, 0.03), m); top.position.y = 0.22;
+      const prism = new THREE.Mesh(cosRBox(0.26, 0.16, 0.26, 0.04), m); prism.position.set(-0.04, 0.33, 0);
+      const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 20), m); dial.position.set(0.22, 0.3, 0);
+      const shutter = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.04, 16), cosMat(0xffffff, 0.2, 0.8)); shutter.position.set(0.12, 0.29, -0.06);
+      const l = camLens(0.12, m, 0.14); l.position.set(-0.04, -0.02, -0.17);
+      const r = camRec(); r.position.set(0.25, 0.08, -0.165);
+      cam.add(body, top, prism, dial, shutter, l, r); g.add(cam);
+      const p = camPlate('500', '#5a3018', '#ffd2a8', 0.3); p.position.set(0, 0.66, -0.57); p.rotation.set(-0.48, Math.PI, 0); g.add(p);
+      return g; } },
+    { id: 'creator_silver', name: 'כובע יוצר כסף', price: 0, icon: '🥈', exclusive: 'creator', tier: 2, build: () => {
+      const g = new THREE.Group(), m = CAM.metal(0xe4e9ee), satin = CAM.satin(), rubber = CAM.rubber();
+      const prof = [[0.88, 0.58], [0.9, 0.61], [0.5, 0.63], [0.47, 0.75], [0.46, 1.05], [0.49, 1.1], [0, 1.1]].map(([x, y]) => new THREE.Vector2(x, y));
+      g.add(new THREE.Mesh(new THREE.LatheGeometry(prof, 48), CAM.brushed(0xc8d0d8)));
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.475, 0.475, 0.12, 48, 1, true), cosMat(0x14161c, 0.45, 0.3)); band.position.y = 0.71; band.material.side = THREE.DoubleSide; g.add(band);
+      const buckle = new THREE.Mesh(cosRBox(0.14, 0.1, 0.03, 0.015), m); buckle.position.set(0, 0.71, -0.48); g.add(buckle);
+      const cam = new THREE.Group(); cam.position.set(0, 1.33, 0.05);
+      const body = new THREE.Mesh(cosRBox(0.36, 0.34, 0.74, 0.07), satin); const side = new THREE.Mesh(cosRBox(0.37, 0.12, 0.6, 0.03), m); side.position.y = 0.17;
+      const handle = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.035, 10, 24, Math.PI), rubber); handle.position.set(0, 0.2, 0.05); handle.rotation.y = Math.PI / 2;
+      const l = camLens(0.14, m, 0.16); l.position.set(0, -0.01, -0.37);
+      const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.17, 0.12, 28, 1, true), satin); hood.rotation.x = Math.PI / 2; hood.position.set(0, -0.01, -0.73); hood.material.side = THREE.DoubleSide;
+      const scr = new THREE.Group(); scr.position.set(0.19, 0.02, -0.12); scr.rotation.y = -0.55;
+      const disp = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.18), new THREE.MeshBasicMaterial({ color: 0x6fc4ff })); disp.position.x = 0.017; disp.rotation.y = Math.PI / 2;
+      scr.add(new THREE.Mesh(cosRBox(0.03, 0.22, 0.3, 0.012), satin), disp);
+      const r = camRec(); r.position.set(-0.1, 0.12, -0.375);
+      cam.add(body, side, handle, l, hood, scr, r); g.add(cam);
+      [-1, 1].forEach(s => { const reel = new THREE.Group(); reel.position.set(s * 0.52, 0.9, 0); reel.rotation.y = Math.PI / 2;
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.025, 10, 28), m); reel.add(ring);
+        for (let k = 0; k < 3; k++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.28, 0.02), m); sp.rotation.z = k * Math.PI / 3; reel.add(sp); }
+        ring.onBeforeRender = () => { reel.rotation.z = performance.now() * 0.002; }; g.add(reel); });
+      const p = camPlate('1K', '#2b313c', '#eef3f8', 0.26); p.position.set(0, 0.88, -0.49); p.rotation.y = Math.PI; g.add(p);
+      return g; } },
+    { id: 'creator_gold', name: 'כובע יוצר זהב', price: 0, icon: '🥇', exclusive: 'creator', tier: 3, build: () => {
+      const g = new THREE.Group(), m = CAM.metal(0xffc23a), satin = CAM.satin(), rubber = CAM.rubber();
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.63, 0.075, 14, 56), m); band.rotation.x = Math.PI / 2; band.position.y = 0.55;
+      const arch = new THREE.Mesh(new THREE.TorusGeometry(0.67, 0.06, 14, 40, Math.PI), m); arch.position.y = 0.55; arch.rotation.y = Math.PI / 2;
+      g.add(band, arch);
+      [0xff2d55, 0x2f80ff, 0x22d38a].forEach((c, ci) => { for (let i = ci; i < 9; i += 3) { const a = i / 9 * Math.PI * 2; const gm = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), new THREE.MeshPhysicalMaterial({ color: c, roughness: 0, metalness: 0.1, clearcoat: 1, emissive: c, emissiveIntensity: 0.25 })); gm.position.set(Math.cos(a) * 0.7, 0.55, Math.sin(a) * 0.7); g.add(gm); } });
+      [-1, 1].forEach(s => { const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.13, 32), m); cup.rotation.z = Math.PI / 2; cup.position.set(s * 0.74, 0.15, 0); const pad = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.05, 10, 28), rubber); pad.rotation.y = Math.PI / 2; pad.position.set(s * 0.67, 0.15, 0); g.add(cup, pad); });
+      const cam = new THREE.Group(); cam.position.set(0, 1.47, 0.05);
+      const body = new THREE.Mesh(cosRBox(0.48, 0.42, 0.66, 0.06), satin); const trim = new THREE.Mesh(cosRBox(0.5, 0.06, 0.68, 0.025), m); trim.position.y = -0.21;
+      const l = camLens(0.17, m, 0.2); l.position.set(0, -0.02, -0.33);
+      const mbox = new THREE.Mesh(cosRBox(0.56, 0.46, 0.06, 0.02), satin); mbox.position.set(0, -0.02, -0.82);
+      [0.25, -0.29].forEach(y => { const f = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.02, 0.1), satin); f.position.set(0, y, -0.86); cam.add(f); });
+      const r = camRec(); r.position.set(0.2, 0.15, -0.335);
+      cam.add(body, trim, l, mbox, r);
+      [-0.18, 0.22].forEach(z => { const reel = new THREE.Group(); reel.position.set(0, 0.48, z);
+        const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.05, 36), m); disc.rotation.z = Math.PI / 2; reel.add(disc);
+        for (let k = 0; k < 5; k++) { const h = new THREE.Mesh(new THREE.CircleGeometry(0.045, 14), satin); const a = k * 1.2566; h.position.set(0.027, Math.sin(a) * 0.12, Math.cos(a) * 0.12); h.rotation.y = Math.PI / 2; reel.add(h); }
+        disc.onBeforeRender = () => { reel.rotation.x = performance.now() * 0.002; }; cam.add(reel); });
+      g.add(cam);
+      const play = new THREE.Group(); play.position.set(0, 0.64, -0.67); play.rotation.y = Math.PI;
+      const tri = new THREE.Shape(); tri.moveTo(-0.05, -0.065); tri.lineTo(0.075, 0); tri.lineTo(-0.05, 0.065); tri.closePath();
+      const t = new THREE.Mesh(new THREE.ShapeGeometry(tri), cosMat(0xffffff, 0.2)); t.position.z = 0.03;
+      play.add(new THREE.Mesh(cosRBox(0.34, 0.24, 0.05, 0.06), m), t); g.add(play);
+      const sparks = [];
+      for (let i = 0; i < 7; i++) { const sp = new THREE.Mesh(new THREE.OctahedronGeometry(0.045), new THREE.MeshStandardMaterial({ color: 0xfff1a8, emissive: 0xffd24a, emissiveIntensity: 1.6 })); g.add(sp); sparks.push(sp); }
+      sparks[0].onBeforeRender = () => { const tt = performance.now() * 0.001; sparks.forEach((sp, i) => { const a = tt * 1.1 + i * 0.8976; sp.position.set(Math.cos(a) * 1.0, 1.15 + Math.sin(tt * 2 + i) * 0.18, Math.sin(a) * 1.0); sp.rotation.y = tt * 3; }); };
+      return g; } }
+,
+    // ---------- ONLY UP bag: earned by reaching the top of the ONLY UP tower (worn on the belly) ----------
+    { id: 'onlyupbag', name: 'תיק ONLY UP', price: 0, icon: '🎒', exclusive: 'earned', slot: 'belly', dispY: 1.1, build: () => {
+      const g = new THREE.Group(), leather = cosTex('leather', 0x5a3a22), dark = cosMat(0x2a1a10, 0.7), gold = CAM.metal(0xffc23a);
+      // belt around the belly
+      const belt = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.045, 10, 48), dark); belt.rotation.x = Math.PI / 2 + 0.12; belt.position.set(0, -1.5, 0.02); g.add(belt);
+      // the pouch in front
+      const pouch = new THREE.Mesh(cosRBox(0.62, 0.38, 0.24, 0.09), leather); pouch.position.set(0, -1.52, -0.86); g.add(pouch);
+      const flap = new THREE.Mesh(cosRBox(0.63, 0.16, 0.26, 0.05), cosTex('leather', 0x6b4528)); flap.position.set(0, -1.38, -0.87); g.add(flap);
+      const zip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.012, 0.012), gold); zip.position.set(0, -1.6, -0.985); g.add(zip);
+      const pull = new THREE.Mesh(cosRBox(0.035, 0.07, 0.015, 0.006), gold); pull.position.set(0.2, -1.635, -0.99); g.add(pull);
+      const buckle = new THREE.Mesh(cosRBox(0.1, 0.08, 0.03, 0.012), gold); buckle.position.set(0, -1.38, -1.005); g.add(buckle);
+      const p = camPlate('ONLY UP', '#2a1a10', '#ffcf4a', 0.36); p.position.set(0, -1.52, -0.982); p.rotation.y = Math.PI; g.add(p);
       return g; } }
   ];
   const ITEM_BY_ID = Object.fromEntries(SHOP_ITEMS.map(i => [i.id, i]));
@@ -512,6 +626,8 @@
     const it = ITEM_BY_ID[id]; if (!it) return false;
     if (it.exclusive === 'owner') return isOwnerUid(uid);
     if (it.exclusive === 'admin') return !!uid && (isOwnerUid(uid) || adminIds.has(uid));
+    if (it.exclusive === 'earned') return true; // the ONLY UP bag: whoever reached the top
+    if (it.exclusive === 'creator') return !!uid && (isOwnerUid(uid) || (creatorTiers.get(uid) || 0) >= it.tier);
     return true;
   }
   function applyCosmetics(a, list, inMouth, uid) {
@@ -520,13 +636,14 @@
     const key = ids.join(',') + (inMouth ? '|m' : '');
     if (key === a.wearKey) return;
     a.wearKey = key;
-    [a.cosmetics, a.handCos, a.mouthCos].forEach(gr => { if (gr) while (gr.children.length) gr.remove(gr.children[0]); });
+    [a.cosmetics, a.handCos, a.mouthCos, a.bodyCos].forEach(gr => { if (gr) while (gr.children.length) gr.remove(gr.children[0]); });
     ids.forEach(id => {
       const it = ITEM_BY_ID[id];
       if (it.slot === 'hand') {
         if (inMouth && a.mouthCos) { const d = it.build(); d.rotation.x = -Math.PI / 2; a.mouthCos.add(d); }
         else if (a.handCos) a.handCos.add(it.build());
-      } else a.cosmetics.add(it.build());
+      } else if (it.slot === 'belly' && a.bodyCos) a.bodyCos.add(it.build());
+      else if (it.slot !== 'belly') a.cosmetics.add(it.build());
     });
   }
   const hemi = new THREE.HemisphereLight(0xe3f2ff, 0x5b7a3a, 0.95); scene.add(hemi);
@@ -1089,6 +1206,7 @@
   const netHz = ON_CLAUDE ? 20 : 10; // presence updates per second (Firebase: 10 to stay inside the free quota)
   const adminIds = new Set();
   const modIds = new Set(); // MOD: from the server list mods/<uid> (only owners can change it)
+  const creatorTiers = new Map(); // creators/<uid>: 1 bronze (500 views), 2 silver (1000), 3 gold (1500); only owners write it
   let adminDoor = null, adminDoorOpenZ = 0, adminDoorShut = 0;
   const standHammers = {}, adminButtons = [];
   let adminFarWall = null, adminBanWall = null, badgeBoard = null; const badgeButtons = [];
@@ -1739,12 +1857,16 @@
         c.font = '700 48px Consolas, monospace';
         c.fillText((kbText || '') + (kbBlink % 2 ? '_' : ' '), 28, 130);
       } else {
-        const now = isAdminUid(roleTarget.uid) ? 'ADMIN' : isModUid(roleTarget.uid) ? 'MOD' : 'PLAYER';
-        c.fillStyle = '#ffcf4a'; fitFont(c, (roleTarget.name || '?') + '  ' + roleTarget.id, 34, 456, 'Rubik, Consolas, sans-serif');
-        c.fillText((roleTarget.name || '?') + '  ' + roleTarget.id, 28, 108);
-        c.fillStyle = 'rgba(255,255,255,0.75)'; c.font = '700 20px Consolas, monospace'; c.fillText('NOW: ' + now, 28, 142);
-        c.fillStyle = '#ffffff'; c.font = '700 26px Consolas, monospace';
-        c.fillText('1 = ADMIN   2 = MOD', 28, 180); c.fillText('3 = REMOVE  0 = CANCEL', 28, 214);
+        // the whole screen: who (name, ID, role now, hat now) and the 8 choices
+        const now = isAdminUid(roleTarget.uid) ? 'ADMIN' : isModUid(roleTarget.uid) ? 'MOD' : 'PLAYER', tier = creatorTiers.get(roleTarget.uid) || 0;
+        c.fillStyle = '#5b6068'; c.fillRect(0, 0, 512, 320);
+        const who = (roleTarget.name || 'PLAYER') + '  ' + roleTarget.id + '  ·  ' + now + (tier ? ' · ' + ['', 'BRONZE', 'SILVER', 'GOLD'][tier] : '');
+        c.fillStyle = '#ffcf4a'; fitFont(c, who, 30, 456, 'Rubik, Consolas, sans-serif'); c.fillText(who, 28, 50);
+        c.font = '700 24px Consolas, monospace';
+        [['1 = ADMIN', '#ff6b5e'], ['2 = MOD', '#5fd38a'], ['3 = REMOVE ROLE', '#cfcfcf'], ['4 = BRONZE HAT 500', '#d08a50'], ['5 = SILVER HAT 1000', '#dfe6ee'], ['6 = GOLD HAT 1500', '#ffcf4a'], ['7 = REMOVE HAT', '#cfcfcf'], ['0 = CANCEL', '#9a9a9a']]
+          .forEach(([t, col], i) => { c.fillStyle = col; c.fillText(t, 28, 88 + i * 29); });
+        if (kbMsg) { c.fillStyle = kbMsgColor; c.textAlign = 'right'; fitFont(c, kbMsg, 26, 220, 'Consolas, monospace'); c.fillText(kbMsg, 490, 88); c.textAlign = 'left'; }
+        monTex.needsUpdate = true; return;
       }
     } else if (kbMode === 'id') {
       c.fillStyle = '#ffcf4a';
@@ -1976,6 +2098,7 @@
     if (roleTarget) { // choosing
       if (v === '0') { roleTarget = null; kbText = ''; kbMsg = ''; drawMonitor(); return; }
       if (v === '1' || v === '2' || v === '3') setRole(roleTarget, v === '1' ? 'admin' : v === '2' ? 'mod' : '');
+      else if (v >= '4' && v <= '7') setCreator(roleTarget, v === '7' ? 0 : Number(v) - 3);
       return;
     }
     if (v === 'ENT') { findRolePlayer(kbText); return; }
@@ -1984,6 +2107,7 @@
     else if (/^[A-Z0-9]$/.test(v) && kbText.length < 10) kbText += v;
     kbMsg = ''; drawMonitor();
   }
+  const findPlayerById = id => findRolePlayer(id);
   async function findRolePlayer(id) {
     id = (id || '').toUpperCase();
     if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return null; }
@@ -1999,6 +2123,22 @@
     found.name = String(found.name).slice(0, 14);
     roleTarget = found; kbText = ''; kbMsg = ''; drawMonitor();
     return found;
+  }
+  // creator hat for video views: 1 bronze 500, 2 silver 1000, 3 gold 1500, 0 = remove (only owners write creators)
+  async function setCreator(t, tier) {
+    if (!isOwnerUid(myUserId)) { monSay('OWNER ONLY', '#ff8a70'); return false; }
+    if (t.uid === myUserId) { monSay('THAT IS YOU (OWNER)', '#ffb070'); return false; }
+    if (!db) { monSay('NO SERVER', '#ff8a70'); return false; }
+    roleBusy = true;
+    try {
+      if (tier) await db.collection('creators').doc(t.uid).set({ tier, name: t.name, by: myUserId, at: Date.now() });
+      else await db.collection('creators').doc(t.uid).delete();
+      roleTarget = null; kbText = '';
+      monSay(tier ? ['', 'BRONZE', 'SILVER', 'GOLD'][tier] + ' HAT GIVEN' : 'HAT REMOVED', tier ? '#7ed957' : '#ffb070');
+      if (tier) tagSound();
+      return true;
+    } catch (e) { monSay('FAILED', '#ff4a3a'); return false; }
+    finally { roleBusy = false; }
   }
   async function setRole(t, role) {
     if (isOwnerUid(t.uid)) { monSay(t.uid === myUserId ? 'THAT IS YOU (OWNER)' : 'ALREADY AN OWNER', '#ffb070'); return false; }
@@ -2362,6 +2502,7 @@
     key: m => pressKey(m),
     admin: b => pressAdminButton(b),
     badge: b => pressBadge(b),
+    mode: b => pressMode(b),
     wardrobe: b => pressWardrobe(b),
     shop: d => { tone(880, 0.08, 'triangle', 0.1); shopClick(d); },
     board: uv => boardClick(uv, true),
@@ -2408,6 +2549,7 @@
     for (const f of vrPressBoxes('shop', pts, shopDisplays, (d, box) => objBox(d.spin, box))) { vrActions.shop(f.item); buzz(f.t.h.pad, 0.3, 25); }
     boardPlanes.forEach(pl => planePress(pl, pts, uv => vrActions.board(uv)));
     if (banPlane) planePress(banPlane, pts, uv => vrActions.ban(uv), 0.05, 0.5);
+    for (const f of vrPressNearest('mode', pts, modeButtons, (b, o) => boxCenter(b.mesh, o), BADGE_PRESS_R, 0.6)) { vrActions.mode(f.item); buzz(f.t.h.pad, 0.3, 30); }
   }
   // Self-test for the ID / keyboard / admin-door / board changes. Temporarily swaps in a fake uid and a fake player,
   // restores everything afterwards, and returns images of the monitor and the player board.
@@ -2767,8 +2909,12 @@
     kicked: () => !$('kickMsg').hidden ? $('kickMsg').textContent : '',
     admins: () => [...adminIds], tag: () => myTagNow(),
     typeAdminId: id => { kbMode = 'id'; kbText = id; return toggleAdminById(id); },
-    keys: async seq => { for (const v of seq) { const k = kbKeys.find(m => m.userData.value === v); k.userData.cool = 0; pressKey(k); await new Promise(r => setTimeout(r, v === 'ENT' || /^[0-3]$/.test(v) ? 1200 : 0)); } return { mode: kbMode, text: kbText, msg: kbMsg, target: roleTarget ? roleTarget.name + ' ' + roleTarget.id : null }; },
-    roles: uid => ({ admin: adminIds.has(uid), mod: modIds.has(uid) }),
+    keys: async seq => { for (const v of seq) { const k = kbKeys.find(m => m.userData.value === v); k.userData.cool = 0; pressKey(k); await new Promise(r => setTimeout(r, v === 'ENT' || /^[0-7]$/.test(v) ? 1200 : 0)); } return { mode: kbMode, text: kbText, msg: kbMsg, target: roleTarget ? roleTarget.name + ' ' + roleTarget.id : null }; },
+    roles: uid => ({ admin: adminIds.has(uid), mod: modIds.has(uid), creator: creatorTiers.get(uid) || 0 }),
+    mode: () => ({ mode: gameMode, ts: gameModeTs, tower: towerActive, towerCols: colliders.filter(c => ONLYUP.colliders.includes(c)).length, code: isCodeRoom(), moved: ONLYUP.moved || 0, noTag: noTagMode(), infect: infectMode, myIt, pos: rig.position.toArray().map(v => +v.toFixed(2)) }),
+    pressModeBtn: id => { pressMode(modeButtons.find(b => b.mode === id)); return gameMode; },
+    towerInfo: () => ({ steps: ONLYUP.steps, top: +ONLYUP.top.toFixed(2), prize: ONLYUP.prizePos.toArray().map(v => +v.toFixed(2)), cols: ONLYUP.colliders.length }),
+    reachTop: () => { headW.copy(ONLYUP.prizePos); const was = started; started = true; updateOnlyUp(1 / 72); started = was; return { owned: shop.owned.includes('onlyupbag'), wearing: shop.wearing.includes('onlyupbag') }; },
     wardrobe: () => wardOwned().map(i => i.id),
     monitorPng: () => monCv.toDataURL(),
     typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
@@ -3416,12 +3562,13 @@
     const hl = new THREE.Object3D(), hr = new THREE.Object3D();
     const handCos = new THREE.Group(); hl.add(handCos);
     const mouthCos = new THREE.Group(); mouthCos.position.set(0, -0.06, -0.8); mouthCos.scale.setScalar(1 / PENGUIN_S); headInner.add(mouthCos);
+    const bodyCos = new THREE.Group(); model.add(bodyCos); // things worn on the body (belly bag) don't turn with the head
     const flame = new THREE.Mesh(new THREE.SphereGeometry(0.7, 16, 10), flameMat);
     flame.visible = false;
     const label = withLabel ? makeLabel(name) : new THREE.Object3D();
     root.add(bodyRef, headRef, hl, hr, flame, label);
     scene.add(root);
-    return { penguin: true, cosmetics, handCos, mouthCos, headGroup, headInner, headQ: null, wearKey: '', root, model, torso: bodyParts, body: bodyRef, head: headRef, hl, hr, arms: [], eyes, flame, label,
+    return { penguin: true, cosmetics, handCos, mouthCos, bodyCos, headGroup, headInner, headQ: null, wearKey: '', root, model, torso: bodyParts, body: bodyRef, head: headRef, hl, hr, arms: [], eyes, flame, label,
       mat: furMats[0], furMats, skin: furMats[0], dark: furMats[0], flippers, name, color, style: 'penguin',
       bodyMesh: bodyParts, phase: Math.random() * 6, blink: 1 + Math.random() * 3,
       tH: V3(), tL: V3(), tR: V3(), yaw: 0, it: false, imm: false, ready: false };
@@ -3703,7 +3850,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v44';
+  const GAME_VERSION = 'v45';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3919,6 +4066,7 @@
     if (o.color !== color) { o.mat.color.set(color); o.color = color; }
     o.tH.copy(h); o.tL.copy(l); o.tR.copy(r);
     o.yaw = num(pr.y, -10, 10) || 0;
+    if (Array.isArray(pr.gm) && typeof pr.gm[0] === 'string' && typeof pr.gm[1] === 'number' && pr.gm[1] > gameModeTs && pr.gm[1] < Date.now() + 60000 && !isCodeRoom()) setGameMode(pr.gm[0], pr.gm[1], false);
     if (Array.isArray(pr.q) && pr.q.length === 4 && pr.q.every(v => typeof v === 'number' && Math.abs(v) <= 1.01) && pr.q.some(v => v !== 0)) (o.headQ || (o.headQ = new THREE.Quaternion())).fromArray(pr.q).normalize();
     else o.headQ = null;
     o.uid = (typeof pr.u === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(pr.u)) ? pr.u : null;
@@ -3985,7 +4133,7 @@
   setInterval(() => { checkBan(); drawBanBoard(); }, 15000);
   function onTagMsg(msg) {
     const d = msg.data || {};
-    if (!myPeer || d.to !== myPeer || myIt || myImm > 0) return;
+    if (!myPeer || d.to !== myPeer || myIt || myImm > 0 || noTagMode()) return;
     const from = others.get(msg.from);
     if (from && !from.it) return;
     myIt = true;
@@ -4320,6 +4468,7 @@
       }
     }
     room = next; roomCode = code;
+    resetGameModeForRoom();
     const dead = () => { if (room === next && next !== lobby) switchRoom(''); else { room = null; updateNetText(); } };
     roomUnsubs.push(next.onPeers(ch => {
       ch.joined.forEach(upsertPeer); ch.updated.forEach(upsertPeer); ch.left.forEach(removePeer);
@@ -4601,6 +4750,8 @@
     selfKey: () => selfAv ? selfAv.wearKey : null,
     letters: () => kbKeys.map(m => m.userData.value).filter(v => /^[A-Z]$/.test(v)).join(''),
     badgeBoard: () => badgeBoard,
+    // where an item goes on a penguin: head / body (belly) / hand
+    placeOf: id => { const a = makeAvatar('#3388ff', '', false, 'penguin'); applyCosmetics(a, [id], false, myUserId || ''); const r = { head: a.cosmetics.children.length, body: a.bodyCos.children.length, hand: a.handCos.children.length }; disposeAvatar(a); return r; },
     // wear an item, turn the hands[0] controller to q ([x,y,z,w]), pose my penguin and the hand item; returns the item's
     // world rotation and what it should be (rig * controller * grip, or upright for the balloon)
     handItem: (id, q, yaw = 0.7) => {
@@ -4648,6 +4799,142 @@
     }
   };
   window.__heightCalib = { get: () => ({ offset: view.position.y, rawHead: camera.position.y, gameHead: camera.position.y + view.position.y, measured: calibMax, calibrating: calibT >= 0 }), start: startCalibration };
+
+  // ================= ONLY UP: a tower of floating platforms; climb as high as you can, the bag waits at the top =================
+  const ONLYUP = { cx: -15, cz: -14, steps: 72, top: 0, best: 0, prize: null, prizeBox: null, group: new THREE.Group(), colliders: [] };
+  // the tower (and its colliders) exist only in the ONLY UP mode: see setTowerActive
+  let towerActive = false;
+  ONLYUP.group.visible = false; scene.add(ONLYUP.group);
+  {
+    let seed = 1337; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const looks = [
+      { c: 0x9b6b3d, r: 0.8, m: 0 }, { c: 0x8a8f96, r: 0.9, m: 0 }, { c: 0xc59b5f, r: 0.7, m: 0 },
+      { c: 0x6f7c8a, r: 0.35, m: 0.6 }, { c: 0xf2f6fa, r: 0.95, m: 0 }, { c: 0x7cb342, r: 0.8, m: 0 }
+    ];
+    const add = (x, y, z, sx, sy, sz, mat) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat); m.position.set(x, y, z); ONLYUP.group.add(m);
+      ONLYUP.colliders.push({ min: V3(x - sx / 2, y - sy / 2, z - sz / 2), max: V3(x + sx / 2, y + sy / 2, z + sz / 2) });
+      return m;
+    };
+    for (let i = 0; i < ONLYUP.steps; i++) {
+      const ang = i * 0.42, rad = 3.6 + 1.6 * Math.sin(i * 0.3), y = 0.55 + i * 0.62;
+      const x = ONLYUP.cx + Math.cos(ang) * rad, z = ONLYUP.cz + Math.sin(ang) * rad;
+      const L = looks[i % looks.length], w = 1.0 + rnd() * 0.6, d = 1.0 + rnd() * 0.6, h = 0.22 + rnd() * 0.2;
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(L.c).offsetHSL(0, 0, (rnd() - 0.5) * 0.08), roughness: L.r, metalness: L.m });
+      add(x, y, z, w, h, d, mat);
+      if (i % 5 === 2) { const mk = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.25, 8), new THREE.MeshStandardMaterial({ color: 0xffcf4a, emissive: 0xffa000, emissiveIntensity: 0.6 })); mk.position.set(x, y + h / 2 + 0.2, z); ONLYUP.group.add(mk); } // little lights to show the way
+      ONLYUP.top = y + h / 2;
+    }
+    // the summit: a golden platform, and the prize floating on a pedestal
+    const lastAng = ONLYUP.steps * 0.42, lastRad = 3.6 + 1.6 * Math.sin(ONLYUP.steps * 0.3);
+    const sx = ONLYUP.cx + Math.cos(lastAng) * lastRad, sz = ONLYUP.cz + Math.sin(lastAng) * lastRad, sy = ONLYUP.top + 0.6;
+    add(sx, sy, sz, 2.6, 0.3, 2.6, CAM.metal(0xffc23a));
+    const ped = add(sx, sy + 0.45, sz, 0.5, 0.6, 0.5, cosMat(0xf4f1ea, 0.4));
+    const prize = new THREE.Group(); prize.position.set(sx, sy + 0.75, sz);
+    const bag = ITEM_BY_ID.onlyupbag.build(); bag.position.y = 1.5 * 0.45; bag.scale.setScalar(0.45); prize.add(bag);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xffe08a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8 })); glow.scale.setScalar(1.4); glow.position.y = 0.05; prize.add(glow);
+    prize.traverse(o => { o.userData.dyn = true; });
+    ONLYUP.group.add(prize); ONLYUP.prize = prize; ONLYUP.prizePos = V3(sx, sy + 0.8, sz); ONLYUP.summitY = sy;
+    // big sign at the bottom
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 256; const c = cv.getContext('2d');
+    c.fillStyle = '#1f2b1f'; c.fillRect(0, 0, 512, 256); c.textAlign = 'center';
+    c.fillStyle = '#ffcf4a'; c.font = '900 110px Rubik, sans-serif'; c.fillText('ONLY UP', 256, 120);
+    c.fillStyle = '#ffffff'; c.font = '700 36px Rubik, sans-serif'; c.direction = 'rtl'; c.fillText('טפסו הכי גבוה שאפשר! למעלה מחכה פרס 🎒', 256, 200);
+    const sign = new THREE.Group(); sign.position.set(ONLYUP.cx + 2.2, 0, ONLYUP.cz + 5.2);
+    const sb = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.1, 0.06), [cosMat(0x2b3a2b), cosMat(0x2b3a2b), cosMat(0x2b3a2b), cosMat(0x2b3a2b), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }), cosMat(0x2b3a2b)]); sb.position.y = 1.9; sign.add(sb);
+    [-0.9, 0.9].forEach(x => { const pst = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.9, 10), cosMat(0x6b4a2b, 0.8)); pst.position.set(x, 0.95, 0); sign.add(pst); });
+    sign.lookAt(0, 0, 0); ONLYUP.group.add(sign);
+  }
+  function setTowerActive(on) {
+    if (on === towerActive) return;
+    towerActive = on; ONLYUP.group.visible = on;
+    if (on) colliders.push(...ONLYUP.colliders);
+    else for (let i = colliders.length - 1; i >= 0; i--) if (ONLYUP.colliders.includes(colliders[i])) colliders.splice(i, 1);
+  }
+  function updateOnlyUp(dt) {
+    if (!towerActive) return;
+    const t = performance.now() * 0.001;
+    ONLYUP.prize.rotation.y = t * 0.8; ONLYUP.prize.position.y = ONLYUP.summitY + 0.75 + Math.sin(t * 2) * 0.08;
+    // height record while climbing the tower
+    const near = Math.hypot(rig.position.x - ONLYUP.cx, rig.position.z - ONLYUP.cz) < 9;
+    if (near) {
+      const hgt = Math.floor(rig.position.y);
+      if (hgt >= 5 && hgt > ONLYUP.best && hgt % 5 === 0) { ONLYUP.best = hgt; toast('ONLY UP: ' + hgt + ' מטר! 🧗', 1.8); }
+    }
+    // reach the prize
+    if (started && headW.distanceTo(ONLYUP.prizePos) < 1.4 || hands.some(h => h.side && handWorld(h, V3()).distanceTo(ONLYUP.prizePos) < 0.6)) {
+      if (!shop.owned.includes('onlyupbag')) {
+        shop.owned.push('onlyupbag'); toggleWear(ITEM_BY_ID.onlyupbag); saveShop();
+        toast('הגעת לפסגה! קיבלת את תיק ה-ONLY UP 🎒🏆', 5); tagSound(); addCoins(50);
+        if (typeof showFloat === 'function') showFloat('ONLY UP 🏆', ONLYUP.prizePos.clone().add(V3(0, 1, 0)));
+      }
+    }
+  }
+  // ================= Game modes board next to the forest computer =================
+  const GAME_MODES = [
+    { id: 'auto', label: 'AUTO', col: '#3a7bd5', he: 'תופסת, ומ-4 שחקנים: הדבקה' },
+    { id: 'tag', label: 'TAG', col: '#e8553a', he: 'תופסת רגילה: מי שנתפס תופס' },
+    { id: 'infection', label: 'INFECT', col: '#8e44ad', he: 'הדבקה: מי שנתפס עוזר לתפוס' },
+    { id: 'casual', label: 'CASUAL', col: '#2e9d5a', he: 'בלי תופסת, רק להסתובב ולשחק' },
+    { id: 'onlyup', label: 'ONLY UP', col: '#c99a1e', he: 'כולם למגדל! מי מגיע ראשון לפסגה?' }
+  ];
+  const noTagMode = () => gameMode === 'casual' || gameMode === 'onlyup';
+  // a room with a code always plays AUTO (only the public room can change the mode)
+  const isCodeRoom = () => !!roomCode;
+  let gameMode = 'auto', gameModeTs = 0;
+  const modeButtons = [];
+  const modeBoard = (() => {
+    const grp = new THREE.Group();
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.3, 10), cosMat(0x6b4a2b, 0.8)); post.position.y = 0.65; grp.add(post);
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 300;
+    const tex = new THREE.CanvasTexture(cv);
+    const board = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.68, 0.05), [cosMat(0x2b3a2b), cosMat(0x2b3a2b), cosMat(0x2b3a2b), cosMat(0x2b3a2b), new THREE.MeshBasicMaterial({ map: tex }), cosMat(0x2b3a2b)]);
+    board.position.y = 1.55; grp.add(board);
+    GAME_MODES.forEach((m, i) => {
+      const btn = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.12, 0.06), new THREE.MeshStandardMaterial({ color: m.col, roughness: 0.5 }));
+      btn.position.set(-0.44 + i * 0.22, 1.12, 0.03);
+      const lc = document.createElement('canvas'); lc.width = 256; lc.height = 120; const x = lc.getContext('2d');
+      x.fillStyle = '#fff'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = '900 ' + (m.label.length > 6 ? 40 : 52) + 'px Rubik, sans-serif'; x.fillText(m.label, 128, 64);
+      const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.19, 0.09), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lc), transparent: true })); lab.position.z = 0.031; btn.add(lab);
+      grp.add(btn); modeButtons.push({ mesh: btn, mode: m.id });
+    });
+    grp.position.set(COMPUTER.x + 1.7, 0, COMPUTER.z - 0.1);
+    grp.lookAt(COMPUTER.x - 0.2, 0, COMPUTER.z - 1.6);
+    scene.add(grp);
+    colliders.push({ min: V3(grp.position.x - 0.08, 0, grp.position.z - 0.08), max: V3(grp.position.x + 0.08, 1.3, grp.position.z + 0.08) });
+    return { cv, tex };
+  })();
+  function drawModeBoard() {
+    const c = modeBoard.cv.getContext('2d'), m = GAME_MODES.find(x => x.id === gameMode) || GAME_MODES[0];
+    c.fillStyle = '#1f2b1f'; c.fillRect(0, 0, 512, 300);
+    c.textAlign = 'center'; c.fillStyle = '#ffe36a'; c.font = '900 54px Rubik, sans-serif'; c.fillText('GAME MODE', 256, 70);
+    c.fillStyle = m.col; c.font = '900 64px Rubik, sans-serif'; c.fillText(m.label, 256, 155);
+    c.fillStyle = '#e8f0e8'; c.font = '700 30px Rubik, sans-serif'; c.direction = 'rtl'; c.fillText(m.he, 256, 225); c.direction = 'ltr';
+    c.fillStyle = 'rgba(255,255,255,0.55)'; c.font = '600 22px Rubik, sans-serif'; c.direction = 'rtl'; c.fillText(isCodeRoom() ? 'בחדר עם קוד המשחק תמיד AUTO' : 'לוחצים על כפתור כדי להחליף לכל החדר', 256, 275); c.direction = 'ltr';
+    modeBoard.tex.needsUpdate = true;
+    modeButtons.forEach(b => { const on = b.mode === gameMode; b.mesh.position.z = on ? 0.012 : 0.03; b.mesh.material.emissive.setHex(on ? 0x333333 : 0); });
+  }
+  function setGameMode(mode, ts, fromMe) {
+    if (!GAME_MODES.some(m => m.id === mode)) return;
+    if (isCodeRoom() && mode !== 'auto') { if (fromMe) { toast('בחדר עם קוד המשחק תמיד AUTO', 2.5); tone(160, 0.15, 'square', 0.08); } return; }
+    const changed = mode !== gameMode;
+    gameMode = mode; gameModeTs = ts;
+    if (mode === 'casual' || mode === 'onlyup') myIt = false;
+    setTowerActive(mode === 'onlyup');
+    if (changed && mode === 'onlyup') goToTowerStart();
+    drawModeBoard();
+    if (changed) { const m = GAME_MODES.find(x => x.id === mode); toast((fromMe ? 'שינית את המשחק ל-' : 'המשחק עבר ל-') + m.label + ': ' + m.he, 3); if (fromMe) tagSound(); sendTimer = 0; }
+  }
+  function goToTowerStart() { // everyone appears at the foot of the ONLY UP tower
+    const ang = -0.5, rad = 4.2;
+    rig.position.set(ONLYUP.cx + Math.cos(ang) * rad + (Math.random() - 0.5), 0, ONLYUP.cz + Math.sin(ang) * rad + (Math.random() - 0.5));
+    vel.set(0, 0, 0); prevHeadOK = false; history = []; wasTouching = false; ONLYUP.best = 0; ONLYUP.moved = (ONLYUP.moved || 0) + 1;
+    hands.forEach(h => { h.touch = false; });
+  }
+  function pressMode(b) { setGameMode(b.mode, Date.now(), true); }
+  drawModeBoard();
+  // a new room: AUTO until someone in it picks a mode (a code room stays AUTO)
+  function resetGameModeForRoom() { gameMode = 'auto'; gameModeTs = 0; myIt = false; setTowerActive(false); drawModeBoard(); }
 
   // ================= Time of day =================
   const TIME_KEYS = [
@@ -4826,6 +5113,7 @@
     updatePark(dt);
     updateTime(dt);
     updateGraphics(dt);
+    updateOnlyUp(dt);
     const inVR = renderer.xr.isPresenting;
     const active = inVR || deskMode;
     voiceFrame(); // voice positions / volumes / speaking signs (runs whenever voice is on)
@@ -5085,7 +5373,8 @@
 
     // ---- Game mode: 4+ players = infection ----
     const wasInfect = infectMode;
-    infectMode = !!room && (others.size + 1) >= INFECT_MIN;
+    infectMode = gameMode === 'infection' ? !!room : gameMode === 'auto' ? (!!room && (others.size + 1) >= INFECT_MIN) : false;
+    if (noTagMode() && myIt) myIt = false;
     if (infectMode !== wasInfect && started) toast(infectMode ? 'יש 4 שחקנים: מצב הדבקה! מי שנתפס עוזר לתפוס 🔥' : 'חזרנו לתופסת רגילה', 3);
 
     // ---- Hammer hits (admins) ----
@@ -5098,7 +5387,7 @@
     } else hammerPrevOk = false;
 
     // ---- Tagging ----
-    if (myIt) {
+    if (myIt && !noTagMode()) {
       const targets = [...others.values()].filter(o => o.ready).map(o => ({ a: o }));
       for (const t of targets) {
         if (!myIt) break;
@@ -5127,7 +5416,7 @@
       const now = performance.now();
       const readyOthers = [...others.values()].filter(o => o.ready);
       const anyIt = myIt || readyOthers.some(o => o.it);
-      if (!anyIt) {
+      if (!anyIt && !noTagMode()) {
         if (!noItSince) noItSince = now;
         // pick who starts: changes every round so it isn't always the same player
         const bucket = Math.floor(Date.now() / 30000);
@@ -5154,6 +5443,7 @@
           h: r(headW), l: r(handPos[0]), r: r(handPos[1]),
           y: Math.round(Math.atan2(-tmp.x, -tmp.z) * 100) / 100,
           q: camera.quaternion.toArray().map(v => Math.round(v * 1000) / 1000),
+          gm: [gameMode, gameModeTs],
           it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.filter(id => canWearItem(myUserId, id)).join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0, t: myTagNow()
         }).catch(() => {});
       }
@@ -5299,7 +5589,7 @@
   // the mirror: owners get all of them, admins the tiara. Called when my ID is known and when owners/admins/mods change
   function syncSpecialItems() {
     if (!myUserId) return [];
-    const added = SHOP_ITEMS.filter(it => it.exclusive && canWearItem(myUserId, it.id) && !shop.owned.includes(it.id)).map(it => it.id);
+    const added = SHOP_ITEMS.filter(it => it.exclusive && it.exclusive !== 'earned' && canWearItem(myUserId, it.id) && !shop.owned.includes(it.id)).map(it => it.id);
     if (!added.length) return added;
     shop.owned.push(...added); saveShop();
     if (wardLabelCv) drawWardrobe();
@@ -5425,6 +5715,14 @@
       if (db) db.collection('admins').onSnapshot(snap => {
         adminIds.clear(); snap.docs.forEach(d => adminIds.add(d.id));
         syncSpecialItems();
+      }, () => {});
+      if (db) db.collection('creators').onSnapshot(snap => {
+        const before = myUserId ? (creatorTiers.get(myUserId) || 0) : 0;
+        creatorTiers.clear(); snap.docs.forEach(d => { const v = d.data() || {}; if (typeof v.tier === 'number') creatorTiers.set(d.id, v.tier); });
+        const now = myUserId ? (creatorTiers.get(myUserId) || 0) : 0;
+        syncSpecialItems();
+        if (now > before) { const best = SHOP_ITEMS.find(it => it.exclusive === 'creator' && it.tier === now); if (best && !shop.wearing.includes(best.id)) toggleWear(best); toast('קיבלת ' + (best ? best.name : 'כובע יוצר') + '! 🎥', 4); }
+        saveShop(); lastListKey = '';
       }, () => {});
       if (db) db.collection('mods').onSnapshot(snap => {
         modIds.clear(); snap.docs.forEach(d => modIds.add(d.id));
