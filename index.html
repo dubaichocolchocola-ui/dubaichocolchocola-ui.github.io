@@ -1088,6 +1088,7 @@
   const OWNER_ID = ON_CLAUDE ? 'u_PZxFZFg32GVdUeiw63H77Q' : FB_OWNER_UID;
   const netHz = ON_CLAUDE ? 20 : 10; // presence updates per second (Firebase: 10 to stay inside the free quota)
   const adminIds = new Set();
+  const modIds = new Set(); // MOD: from the server list mods/<uid> (only owners can change it)
   let adminDoor = null, adminDoorOpenZ = 0, adminDoorShut = 0;
   const standHammers = {}, adminButtons = [];
   let adminFarWall = null, adminBanWall = null, badgeBoard = null; const badgeButtons = [];
@@ -1169,7 +1170,8 @@
     const fail = why => { hammerSay('FAILED: ' + why, '#ff8a70'); tone(160, 0.15, 'square', 0.08); return 'FAILED: ' + why; };
     if (!o) return fail('no player');
     if (isOwnerUid(o.uid)) { toast('אי אפשר להשתמש בפטיש על הבעלים של המשחק 😉', 2); return fail(name + ' is an owner'); }
-    if (!isAdmin()) return fail('not an admin');
+    if (!isStaff()) return fail('not staff');
+    if (heldHammer === 'BAN' && !isAdmin()) return fail('BAN is for admins');
     if (!room) return fail('offline');
     tone(90, 0.3, 'square', 0.2, -40);
     try {
@@ -1224,7 +1226,7 @@
     }
     if (b.id !== 'NONE' && !tagAllowed(b.id, myUserId)) {
       tone(160, 0.15, 'square', 0.08);
-      toast(b.id === 'OWNER' ? 'רק הבעלים יכול לבחור OWNER' : 'רק אדמינים יכולים לבחור ADMIN', 2);
+      toast(b.id === 'OWNER' ? 'רק הבעלים יכול לבחור OWNER' : b.id === 'ADMIN' ? 'רק אדמינים יכולים לבחור ADMIN' : 'רק MOD, אדמינים ובעלים יכולים לבחור MOD', 2);
       return;
     }
     try { localStorage.setItem('forestTagBadge', b.id); } catch (e) {}
@@ -1247,7 +1249,8 @@
     });
   }
   function pressAdminButton(b) {
-    if (!isAdmin()) { toast('רק אדמינים יכולים ללחוץ על זה', 1.8); tone(160, 0.15, 'square', 0.08); return; }
+    if (!isStaff()) { toast('רק אדמינים ו-MOD יכולים ללחוץ על זה', 1.8); tone(160, 0.15, 'square', 0.08); return; }
+    if (b.take && b.id === 'BAN' && !isAdmin()) { toast('MOD לא יכול לקחת את פטיש ה-BAN', 2); tone(160, 0.15, 'square', 0.08); return; }
     tone(b.take ? 880 : 300, 0.1, 'triangle', 0.12);
     if (b.take) { setHeld(b.id); toast('לקחת את הפטיש ' + HAMMER_LABEL[b.id] + ' 🔨', 2); }
     else if (heldHammer === b.id) { setHeld(''); toast('החזרת את הפטיש', 1.5); }
@@ -1351,16 +1354,16 @@
       bc.fillStyle = '#ffffff'; bc.direction = 'rtl'; bc.textAlign = 'center'; bc.textBaseline = 'middle'; bc.font = '900 64px Rubik, sans-serif';
       bc.fillText('התג שלי', 256, 72);
       badgeBoard.add(new THREE.Mesh(new THREE.PlaneGeometry(0.56, 0.35), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(bcv) })));
-      [['OWNER', 'OWNER', 0x8b5a2b], ['ADMIN', 'ADMIN', 0xd8332a], ['NONE', 'בלי', 0x7a7a7a]].forEach(([id, text, col], i) => {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: 0x000000 }));
-        m.position.set(-0.18 + i * 0.18, -0.06, 0.012);
+      [['OWNER', 'OWNER', 0x8b5a2b], ['ADMIN', 'ADMIN', 0xd8332a], ['MOD', 'MOD', 0x2e9d5a], ['NONE', 'בלי', 0x7a7a7a]].forEach(([id, text, col], i) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: 0x000000 }));
+        m.position.set(-0.2025 + i * 0.135, -0.06, 0.012);
         const lcv = document.createElement('canvas'); lcv.width = 256; lcv.height = 128;
         const lc = lcv.getContext('2d'); lc.fillStyle = '#ffffff'; lc.textAlign = 'center'; lc.textBaseline = 'middle'; lc.direction = 'rtl';
         // fit the text to the button: as big as possible, at most 224 px wide on the 256 px canvas
         let fsz = 100; lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif';
         const tw = lc.measureText(text).width; if (tw > 224) { fsz = Math.floor(fsz * 224 / tw); lc.font = '900 ' + fsz + 'px Rubik, Arial, sans-serif'; }
         lc.fillText(text, 128, 68);
-        const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, depthWrite: false }));
+        const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.055), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, depthWrite: false }));
         lab.position.z = 0.0105; m.add(lab);
         badgeBoard.add(m);
         badgeButtons.push({ mesh: m, id, color: col });
@@ -1419,16 +1422,20 @@
   const isOwnerUid = uid => isMainOwnerUid(uid) || (!!uid && ownerIds.has(uid));
   const isAdmin = () => !!myUserId && (isOwnerUid(myUserId) || adminIds.has(myUserId));
   const isAdminUid = uid => !!uid && (isOwnerUid(uid) || adminIds.has(uid));
-  // ---- Tag over the head: OWNER (brown) only for the owner, ADMIN (red) only for the owner and admins ----
-  const TAG_COLORS = { OWNER: '#8b5a2b', ADMIN: '#d8332a' };
-  const tagAllowed = (t, uid) => t === 'OWNER' ? isOwnerUid(uid) : t === 'ADMIN' ? isAdminUid(uid) : false;
+  // MOD: through the admin door, only the KICK and KICK S hammers (no BAN). Staff = owners, admins and MODs
+  const isModUid = uid => !!uid && modIds.has(uid);
+  const isStaffUid = uid => isAdminUid(uid) || isModUid(uid);
+  const isStaff = () => isStaffUid(myUserId);
+  // ---- Tag over the head: OWNER (brown) only for owners, ADMIN (red) for owners and admins, MOD (green) for all staff ----
+  const TAG_COLORS = { OWNER: '#8b5a2b', ADMIN: '#d8332a', MOD: '#2e9d5a' };
+  const tagAllowed = (t, uid) => t === 'OWNER' ? isOwnerUid(uid) : t === 'ADMIN' ? isAdminUid(uid) : t === 'MOD' ? isStaffUid(uid) : false;
   // my tag: the choice on the admin-room board (localStorage), if allowed; otherwise the default
   // (owner -> OWNER, admin -> ADMIN, everyone else none). 'NONE' = chose no tag.
   function myTagNow() {
     let c = null; try { c = localStorage.getItem('forestTagBadge'); } catch (e) {}
     if (c === 'NONE') return '';
     if (c && tagAllowed(c, myUserId)) return c;
-    return isOwnerUid(myUserId) ? 'OWNER' : isAdmin() ? 'ADMIN' : '';
+    return isOwnerUid(myUserId) ? 'OWNER' : isAdmin() ? 'ADMIN' : isStaff() ? 'MOD' : '';
   }
   function makeTag(text) {
     const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
@@ -1734,8 +1741,9 @@
       if (isOwnerUid(myUserId)) { // owner: type a player's ID + ENTER = admin on/off
         c.fillStyle = '#ffffff'; fitFont(c, 'ID: ' + kbText + '_', 30, 456, 'Consolas, monospace');
         c.fillText('ID: ' + kbText + (kbBlink % 2 ? '_' : ' '), 28, 202);
-        c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = '700 17px Consolas, monospace';
-        c.fillText(isMainOwnerUid(myUserId) ? 'ID=ADMIN  ID SPC 100=COINS  ID SPC O=OWNER' : 'ID+ENTER = ADMIN   ID SPC 100+ENTER = COINS', 28, 226);
+        c.fillStyle = 'rgba(255,255,255,0.6)';
+        const hint = isMainOwnerUid(myUserId) ? 'ID=ADMIN  ID SPC M=MOD  ID SPC 100=COINS  ID SPC O=OWNER' : 'ID=ADMIN  ID SPC M=MOD  ID SPC 100=COINS';
+        fitFont(c, hint, 17, 456, 'Consolas, monospace'); c.fillText(hint, 28, 226);
       }
     } else if (kbMode === 'color') {
       c.fillStyle = myColor; c.fillRect(28, 100, 90, 60);
@@ -1880,14 +1888,15 @@
       if (!isOwnerUid(myUserId)) return;
       if (v === 'ENT') {
         const t = kbText.trim(); kbText = '';
-        const m = t.match(/^([0-9A-Z]{10}) ([0-9]{1,16})$/), mo = t.match(/^([0-9A-Z]{10}) O$/);
-        if (m) giveCoinsById(m[1], Number(m[2])); else if (mo) toggleOwnerById(mo[1]); else toggleAdminById(t);
+        const m = t.match(/^([0-9A-Z]{10}) ([0-9]{1,16})$/), mo = t.match(/^([0-9A-Z]{10}) O$/), mm = t.match(/^([0-9A-Z]{10}) M$/);
+        if (m) giveCoinsById(m[1], Number(m[2])); else if (mo) toggleOwnerById(mo[1]); else if (mm) toggleModById(mm[1]); else toggleAdminById(t);
         drawMonitor(); return;
       }
       if (v === 'DEL') kbText = kbText.slice(0, -1);
       else if (v === 'CLR') kbText = '';
       else if (v === 'SPC') { if (kbText.length === 10) kbText += ' '; }            // ID, then a space, then the amount
-      else if (/^[A-Z0-9]$/.test(v) && (kbText.length < 10 || (kbText.length > 10 && /^[0-9]$/.test(v) && !/ O$/.test(kbText) && kbText.length < 27))) kbText += v;
+      else if (/^[A-Z0-9]$/.test(v) && (kbText.length < 10 || (kbText.length > 10 && /^[0-9]$/.test(v) && !/ [OM]$/.test(kbText) && kbText.length < 27))) kbText += v;
+      else if (v === 'M' && kbText.length === 11) kbText += 'M'; // "ID M" = MOD on/off (owners)
       else if (v === 'O' && kbText.length === 11 && isMainOwnerUid(myUserId)) kbText += 'O'; // "ID O" = owner on/off (main owner only)
       drawMonitor(); return;
     }
@@ -1937,6 +1946,21 @@
       if (adminIds.has(rec.uid)) { await db.collection('admins').doc(rec.uid).delete(); monSay('ADMIN REMOVED: ' + id, '#ffb070'); }
       else { await db.collection('admins').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('ADMIN ADDED: ' + id, '#aaffaa'); tagSound(); }
     } catch (e) { monSay('FAILED', '#ff4a3a'); }
+  }
+  // owners: make the player with this ID a MOD, or remove it (the server lets only owners change mods)
+  async function toggleModById(id) {
+    id = (id || '').toUpperCase();
+    if (!isOwnerUid(myUserId)) { monSay('ONLY OWNERS', '#ff8a70'); return false; }
+    if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return false; }
+    if (!db || !db.get) { monSay('NO SERVER', '#ff8a70'); return false; }
+    try {
+      const rec = await db.get('ids/' + id);
+      if (!rec || !rec.uid) { monSay('ID NOT FOUND', '#ff8a70'); return false; }
+      if (isOwnerUid(rec.uid)) { monSay(rec.uid === myUserId ? 'THAT IS YOU (OWNER)' : 'ALREADY AN OWNER', '#ffb070'); return false; }
+      if (modIds.has(rec.uid)) { await db.collection('mods').doc(rec.uid).delete(); monSay('MOD REMOVED: ' + id, '#ffb070'); }
+      else { await db.collection('mods').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('MOD ADDED: ' + id, '#7ed957'); tagSound(); }
+      return true;
+    } catch (e) { monSay('FAILED', '#ff4a3a'); return false; }
   }
   function showMyId() {
     kbMode = 'id'; kbText = ''; kbMsg = ''; applyKeyLabels(); drawMonitor();
@@ -2158,7 +2182,7 @@
   function drawPlayerList() {
     const list = [{ name: myName, color: myColor, it: myIt, me: true, uid: myIdUid() }];
     others.forEach((o, peer) => { if (o.ready) list.push({ name: o.name, color: o.color, it: o.it, me: false, peer, uid: o.uid }); });
-    const key = roomCode + '|' + isAdmin() + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : '') + (voice.mutedAll.has(p.uid) ? 'V' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
+    const key = roomCode + '|' + isAdmin() + '|' + list.map(p => p.name + p.color + p.it + (p.uid || '') + (isAdminUid(p.uid) ? 'A' : isModUid(p.uid) ? 'M' : '') + (voice.mutedAll.has(p.uid) ? 'V' : '') + (p.peer ? (mutedPeers.has(p.peer) ? 'm' : '') + (reportedPeers.has(p.peer) ? 'r' : '') : '')).join(',');
     if (key === lastListKey) return;
     lastListKey = key;
     boardList = list.slice(0, 10);
@@ -2185,7 +2209,7 @@
       // small ID line under the name, with a crown for admins / the owner
       c.font = '700 13px Consolas, monospace'; c.fillStyle = muted ? 'rgba(255,230,160,0.45)' : '#ffe6a0';
       c.direction = 'ltr';
-      c.fillText('ID: ' + (idOf(p.uid) || '—') + (isAdminUid(p.uid) ? ' 👑' : ''), 402, y + 14);
+      c.fillText('ID: ' + (idOf(p.uid) || '—') + (isAdminUid(p.uid) ? ' 👑' : isModUid(p.uid) ? ' 🛡️' : ''), 402, y + 14);
       c.direction = 'rtl';
       if (!p.me) {
         btn(BTN_MUTE[0], BTN_MUTE[1], y, muted ? 'בטל השתקה' : 'השתק', muted ? '#ffcf4a' : 'rgba(255,255,255,0.18)', muted ? '#2a1a05' : '#fff');
@@ -2674,6 +2698,10 @@
     kicked: () => !$('kickMsg').hidden ? $('kickMsg').textContent : '',
     admins: () => [...adminIds], tag: () => myTagNow(),
     typeAdminId: id => { kbMode = 'id'; kbText = id; return toggleAdminById(id); },
+    typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
+    mods: () => [...modIds], isStaff: () => isStaff(), doorBlocks: () => { const d = colliders.find(c => c.admin); const p = d.min.clone().add(d.max).multiplyScalar(0.5); return !!probe(p, 0.16); },
+    pressHammer: (id, take = true) => { const b = adminButtons.find(x => x.id === id && x.take === take); pressAdminButton(b); return heldHammer; },
+    pressTag: id => { pressBadge(badgeButtons.find(b => b.id === id)); return myTagNow(); }, tagOf: uid => { const o = others.get(uid); return o ? o.tagText || '' : null; },
     monitorLine: () => kbMsg,
     ban: (uid, mins) => db.collection('bans').doc(uid).set({ until: Date.now() + mins * 60000, name: 'x', by: myUserId }),
     setName: n => setMyName(n),
@@ -3101,9 +3129,9 @@
   // skip (optional): colliders to ignore for this probe (used by the hands over the keyboard)
   function probe(p, r, skip = null) {
     let best = null;
-    const adm = isAdmin();
+    const adm = isStaff();
     for (const c of colliders) {
-      if (c.admin && adm) continue; // admin-only door: solid for everyone else
+      if (c.admin && adm) continue; // staff-only door (owners, admins, MODs): solid for everyone else
       if (skip && (skip === c || (skip instanceof Set && skip.has(c)))) continue;
       if (p.x < c.min.x - r || p.x > c.max.x + r || p.y < c.min.y - r || p.y > c.max.y + r || p.z < c.min.z - r || p.z > c.max.z + r) continue;
       const pens = [
@@ -3602,7 +3630,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v41';
+  const GAME_VERSION = 'v42';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3859,7 +3887,7 @@
     const d = msg.data || {};
     if (!myPeer || d.to !== myPeer || isOwnerUid(myUserId)) return;
     const from = others.get(msg.from);
-    if (!from || !isAdminUid(from.uid)) return;
+    if (!from || !(isAdminUid(from.uid) || (isModUid(from.uid) && (d.a === 'kick' || d.a === 'kicks')))) return;
     if (d.a === 'kicks') { switchRoom(''); toast('אדמין הוציא אותך מהחדר', 3); }
     else if (d.a === 'kick' || d.a === 'ban') { kickedOut(d.a === 'ban' ? 'קיבלת באן לשעה' : 'אדמין הוציא אותך מהמשחק'); }
   }
@@ -5312,6 +5340,10 @@
       }, () => {});
       if (db) db.collection('admins').onSnapshot(snap => {
         adminIds.clear(); snap.docs.forEach(d => adminIds.add(d.id));
+      }, () => {});
+      if (db) db.collection('mods').onSnapshot(snap => {
+        modIds.clear(); snap.docs.forEach(d => modIds.add(d.id));
+        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0;
       }, () => {});
       if (db) db.collection('bans').onSnapshot(snap => {
         bans = snap.docs.map(d => { const v = d.data() || {}; return { id: d.id, until: typeof v.until === 'number' ? v.until : 0, name: typeof v.name === 'string' ? v.name.slice(0, 14) : '' }; });
