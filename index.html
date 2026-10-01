@@ -1290,12 +1290,17 @@
     if (!o) return fail('no player');
     if (isOwnerUid(o.uid)) { toast('אי אפשר להשתמש בפטיש על הבעלים של המשחק 😉', 2); return fail(name + ' is an owner'); }
     if (!isStaff()) return fail('not staff');
-    if (heldHammer === 'FLY') return null; // flying, not hitting
     if (heldHammer === 'BAN' && !isAdmin()) return fail('BAN is for admins');
     if (!room) return fail('offline');
     tone(90, 0.3, 'square', 0.2, -40);
     try {
-      if (heldHammer === 'KICK') { await room.emit('mod', { to: o.peer, a: 'kick' }); toast('הוצאת את ' + name + ' מהמשחק', 2); }
+      if (heldHammer === 'FLY') {
+        // launch: up, and away from me (the horizontal direction from me to the player)
+        const me = camera.getWorldPosition(V3()), d = V3(o.head.position.x - me.x, 0, o.head.position.z - me.z);
+        if (d.lengthSq() < 1e-6) d.set(0, 0, -1); d.normalize();
+        await room.emit('mod', { to: o.peer, a: 'launch', dx: Math.round(d.x * 1000) / 1000, dz: Math.round(d.z * 1000) / 1000 }); toast('העפת את ' + name + ' לשמיים 🚀', 2);
+      }
+      else if (heldHammer === 'KICK') { await room.emit('mod', { to: o.peer, a: 'kick' }); toast('הוצאת את ' + name + ' מהמשחק', 2); }
       else if (heldHammer === 'KICKS') { await room.emit('mod', { to: o.peer, a: 'kicks' }); toast('הוצאת את ' + name + ' מהחדר', 2); }
       else if (heldHammer === 'BAN') {
         if (!o.uid || !db) return fail('no ID for ' + name);
@@ -1437,7 +1442,7 @@
   // one frame of hit detection: the hammer head (world) must touch a player's head or body while swinging fast
   function hammerSwingCheck(dt, head, speed) {
     hammerCool = Math.max(0, hammerCool - dt);
-    if (!heldHammer || heldHammer === 'FLY' || hammerCool > 0 || speed < HAMMER_MIN_SPEED) return null; // the FLY hammer is for flying, it hits nobody
+    if (!heldHammer || hammerCool > 0 || speed < HAMMER_MIN_SPEED) return null;
     // the nearest player the head touches (players standing close together: hit the one you actually swung at)
     let best = null, bd = Infinity;
     for (const o of others.values()) {
@@ -2982,7 +2987,8 @@
     monitorPng: () => monCv.toDataURL(),
     typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
     mods: () => [...modIds], isStaff: () => isStaff(), doorBlocks: () => { const d = colliders.find(c => c.admin); const p = d.min.clone().add(d.max).multiplyScalar(0.5); return !!probe(p, 0.16); },
-    fly: () => ({ flyMode, canFly: canFly(), held: heldHammer, vel: vel.toArray().map(v => +v.toFixed(2)) }),
+    fly: () => ({ flyMode, canFly: canFly(), held: heldHammer, vel: vel.toArray().map(v => +v.toFixed(2)), touch: hands.map(x => x.touch), cooldown: hands.map(x => +x.cooldown.toFixed(2)) }),
+    setTouch: () => { hands.forEach(x => { x.touch = true; }); vel.set(0, 0, 0); return true; },
     pressFly: () => { pressBadge(badgeButtons.find(b => b.kind === 'fly')); return flyMode; },
     flyStick: (sx, sy, look, frames = 60) => { const lh = hands.find(x => x.side === 'left') || hands[0]; const sp = lh.side, pp = lh.pad; lh.side = 'left'; lh.pad = { axes: [0, 0, sx, sy] };
       camera.lookAt(camera.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(...look))); camera.updateMatrixWorld(true); vel.set(0, 0, 0); for (let i = 0; i < frames; i++) flyStep(1 / 72); lh.side = sp; lh.pad = pp; return vel.toArray().map(v => +v.toFixed(2)); },
@@ -3918,7 +3924,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v46';
+  const GAME_VERSION = 'v47';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4176,7 +4182,18 @@
     const d = msg.data || {};
     if (!myPeer || d.to !== myPeer || isOwnerUid(myUserId)) return;
     const from = others.get(msg.from);
-    if (!from || !(isAdminUid(from.uid) || (isModUid(from.uid) && (d.a === 'kick' || d.a === 'kicks')))) return;
+    if (!from || !(isAdminUid(from.uid) || (isModUid(from.uid) && (d.a === 'kick' || d.a === 'kicks' || d.a === 'launch')))) return;
+    if (d.a === 'launch') {
+      // sent to the sky: let go of everything (and don't grab again for a moment, or a hand on the ground stops it),
+      // forget the hands' last swing (it would replace this push at release), then up and away
+      const dx = Math.max(-1, Math.min(1, Number(d.dx) || 0)), dz = Math.max(-1, Math.min(1, Number(d.dz) || 0));
+      hands.forEach(hh => { hh.touch = false; hh.cooldown = 0.25; });
+      history = []; wasTouching = false;
+      vel.set(dx * 3, 13, dz * 3);
+      tone(220, 0.5, 'sawtooth', 0.12, 700); thud(4);
+      toast('מישהו העיף אותך לשמיים! 🚀', 3);
+      return;
+    }
     if (d.a === 'kicks') { switchRoom(''); toast('אדמין הוציא אותך מהחדר', 3); }
     else if (d.a === 'kick' || d.a === 'ban') { kickedOut(d.a === 'ban' ? 'קיבלת באן לשעה' : 'אדמין הוציא אותך מהמשחק'); }
   }
