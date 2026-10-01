@@ -1732,9 +1732,21 @@
     c.fillStyle = '#5b6068'; c.fillRect(0, 0, 512, 320);
     c.direction = 'ltr'; c.textAlign = 'left'; c.textBaseline = 'middle';
     c.fillStyle = '#ffffff'; c.font = '700 40px Consolas, monospace';
-    const label = kbMode === 'name' ? 'NAME:' : kbMode === 'color' ? 'COLOR:' : kbMode === 'id' ? 'YOUR ID:' : 'CODE:';
+    const label = kbMode === 'name' ? 'NAME:' : kbMode === 'color' ? 'COLOR:' : kbMode === 'id' ? 'YOUR ID:' : kbMode === 'role' ? 'GIVE ROLE - ID:' : 'CODE:';
     c.fillText(label, 28, 60);
-    if (kbMode === 'id') {
+    if (kbMode === 'role') {
+      if (!roleTarget) {
+        c.font = '700 48px Consolas, monospace';
+        c.fillText((kbText || '') + (kbBlink % 2 ? '_' : ' '), 28, 130);
+      } else {
+        const now = isAdminUid(roleTarget.uid) ? 'ADMIN' : isModUid(roleTarget.uid) ? 'MOD' : 'PLAYER';
+        c.fillStyle = '#ffcf4a'; fitFont(c, (roleTarget.name || '?') + '  ' + roleTarget.id, 34, 456, 'Rubik, Consolas, sans-serif');
+        c.fillText((roleTarget.name || '?') + '  ' + roleTarget.id, 28, 108);
+        c.fillStyle = 'rgba(255,255,255,0.75)'; c.font = '700 20px Consolas, monospace'; c.fillText('NOW: ' + now, 28, 142);
+        c.fillStyle = '#ffffff'; c.font = '700 26px Consolas, monospace';
+        c.fillText('1 = ADMIN   2 = MOD', 28, 180); c.fillText('3 = REMOVE  0 = CANCEL', 28, 214);
+      }
+    } else if (kbMode === 'id') {
       c.fillStyle = '#ffcf4a';
       c.font = '700 76px Consolas, monospace'; // 76px: 10 characters fit the screen
       c.fillText(idOf(myIdUid()), 28, 150);
@@ -1803,13 +1815,13 @@
   // The model's own keys are hidden; new keys (copies of a letter key, 0.84 size) fill the same area:
   // 5 rows between the model's first and fourth row, up to 10 keys per row, centered
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['SUN', 'MSUN'], ['TIME', 'MTIME']],
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['ROLE', 'MROLE'], ['TURN', 'MTURN'], ['SUN', 'MSUN'], ['TIME', 'MTIME']],
     [...'1234567890'].map(c => [c, c]),
     [...'QWERTYUIOP'].map(c => [c, c]),
     [...'ASDFGHJKL'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
     [...'ZXCVBNM'].map(c => [c, c]).concat([['SPC', 'SPC'], ['CLR', 'CLR'], ['DEL', 'DEL']])
   ];
-  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MTURN: 0x3b4a5c, MSUN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
+  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MROLE: 0x8b5a2b, MTURN: 0x3b4a5c, MSUN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
   const KEY_S = 0.84;
   {
     // each model key's center (pcGroup space) and the key area
@@ -1878,6 +1890,13 @@
     m.userData.cool = 0.18; m.userData.press = 0.12;
     tone(650 + Math.random() * 250, 0.05, 'square', 0.06);
     const v = m.userData.value;
+    // another setting key leaves the ROLE screen (and then does its own thing)
+    if (kbMode === 'role' && /^M(NAME|CODE|COLOR|ID|TURN|SUN|TIME)$/.test(v)) { kbMode = 'code'; kbText = ''; roleTarget = null; kbMsg = ''; }
+    if (v === 'MROLE') {
+      if (!isOwnerUid(myUserId)) { monSay('OWNER ONLY', '#ff8a70'); return; }
+      kbMode = 'role'; kbText = ''; roleTarget = null; kbMsg = ''; applyKeyLabels(); drawMonitor(); return;
+    }
+    if (kbMode === 'role') { roleKey(v); return; }
     if (v === 'MID') { showMyId(); return; }
     if (v === 'MTURN') { nextTurnMode(); return; }
     if (v === 'MTIME') { nextTimeMode(); return; }
@@ -1946,6 +1965,56 @@
       if (adminIds.has(rec.uid)) { await db.collection('admins').doc(rec.uid).delete(); monSay('ADMIN REMOVED: ' + id, '#ffb070'); }
       else { await db.collection('admins').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('ADMIN ADDED: ' + id, '#aaffaa'); tagSound(); }
     } catch (e) { monSay('FAILED', '#ff4a3a'); }
+  }
+  // ---- ROLE (owners): type a player's ID + ENTER, then 1 = ADMIN, 2 = MOD, 3 = REMOVE, 0 = CANCEL ----
+  // The player is looked up in the room first, then in the ids list (players who aren't here). A player has one role:
+  // giving ADMIN takes MOD away and the other way round; REMOVE takes both. Only owners can write admins/mods.
+  let roleTarget = null, roleBusy = false;
+  function roleKey(v) {
+    if (!isOwnerUid(myUserId)) { kbMode = 'code'; monSay('OWNER ONLY', '#ff8a70'); return; }
+    if (roleBusy) return;
+    if (roleTarget) { // choosing
+      if (v === '0') { roleTarget = null; kbText = ''; kbMsg = ''; drawMonitor(); return; }
+      if (v === '1' || v === '2' || v === '3') setRole(roleTarget, v === '1' ? 'admin' : v === '2' ? 'mod' : '');
+      return;
+    }
+    if (v === 'ENT') { findRolePlayer(kbText); return; }
+    if (v === 'DEL') kbText = kbText.slice(0, -1);
+    else if (v === 'CLR') kbText = '';
+    else if (/^[A-Z0-9]$/.test(v) && kbText.length < 10) kbText += v;
+    kbMsg = ''; drawMonitor();
+  }
+  async function findRolePlayer(id) {
+    id = (id || '').toUpperCase();
+    if (!/^[0-9A-Z]{10}$/.test(id)) { monSay('ID = 10 CHARACTERS', '#ff8a70'); return null; }
+    let found = null;
+    for (const o of others.values()) if (o.uid && idOf(o.uid) === id) { found = { uid: o.uid, id, name: o.name || '' }; break; }
+    if (!found && db && db.get) {
+      roleBusy = true;
+      try { const rec = await db.get('ids/' + id); if (rec && rec.uid) found = { uid: rec.uid, id, name: typeof rec.name === 'string' ? rec.name : '' }; } catch (e) {}
+      roleBusy = false;
+    }
+    if (kbMode !== 'role') return null; // left the screen while looking
+    if (!found) { kbText = ''; monSay('ID NOT FOUND', '#ff8a70'); return null; }
+    found.name = String(found.name).slice(0, 14);
+    roleTarget = found; kbText = ''; kbMsg = ''; drawMonitor();
+    return found;
+  }
+  async function setRole(t, role) {
+    if (isOwnerUid(t.uid)) { monSay(t.uid === myUserId ? 'THAT IS YOU (OWNER)' : 'ALREADY AN OWNER', '#ffb070'); return false; }
+    if (!db) { monSay('NO SERVER', '#ff8a70'); return false; }
+    roleBusy = true;
+    const rec = { at: Date.now(), id: t.id, name: t.name };
+    try {
+      if (role === 'admin') { await db.collection('admins').doc(t.uid).set(rec); await db.collection('mods').doc(t.uid).delete(); }
+      else if (role === 'mod') { await db.collection('mods').doc(t.uid).set(rec); await db.collection('admins').doc(t.uid).delete(); }
+      else { await db.collection('admins').doc(t.uid).delete(); await db.collection('mods').doc(t.uid).delete(); }
+      roleTarget = null; kbText = '';
+      monSay(role === 'admin' ? 'ADMIN ADDED' : role === 'mod' ? 'MOD ADDED' : 'ROLE REMOVED', role ? '#7ed957' : '#ffb070');
+      if (role) tagSound();
+      return true;
+    } catch (e) { monSay('FAILED', '#ff4a3a'); return false; }
+    finally { roleBusy = false; }
   }
   // owners: make the player with this ID a MOD, or remove it (the server lets only owners change mods)
   async function toggleModById(id) {
@@ -2698,6 +2767,9 @@
     kicked: () => !$('kickMsg').hidden ? $('kickMsg').textContent : '',
     admins: () => [...adminIds], tag: () => myTagNow(),
     typeAdminId: id => { kbMode = 'id'; kbText = id; return toggleAdminById(id); },
+    keys: async seq => { for (const v of seq) { const k = kbKeys.find(m => m.userData.value === v); k.userData.cool = 0; pressKey(k); await new Promise(r => setTimeout(r, v === 'ENT' || /^[0-3]$/.test(v) ? 1200 : 0)); } return { mode: kbMode, text: kbText, msg: kbMsg, target: roleTarget ? roleTarget.name + ' ' + roleTarget.id : null }; },
+    roles: uid => ({ admin: adminIds.has(uid), mod: modIds.has(uid) }),
+    monitorPng: () => monCv.toDataURL(),
     typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
     mods: () => [...modIds], isStaff: () => isStaff(), doorBlocks: () => { const d = colliders.find(c => c.admin); const p = d.min.clone().add(d.max).multiplyScalar(0.5); return !!probe(p, 0.16); },
     pressHammer: (id, take = true) => { const b = adminButtons.find(x => x.id === id && x.take === take); pressAdminButton(b); return heldHammer; },
@@ -3630,7 +3702,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v42';
+  const GAME_VERSION = 'v43';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
