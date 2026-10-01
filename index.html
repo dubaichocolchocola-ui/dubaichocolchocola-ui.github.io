@@ -2769,6 +2769,7 @@
     typeAdminId: id => { kbMode = 'id'; kbText = id; return toggleAdminById(id); },
     keys: async seq => { for (const v of seq) { const k = kbKeys.find(m => m.userData.value === v); k.userData.cool = 0; pressKey(k); await new Promise(r => setTimeout(r, v === 'ENT' || /^[0-3]$/.test(v) ? 1200 : 0)); } return { mode: kbMode, text: kbText, msg: kbMsg, target: roleTarget ? roleTarget.name + ' ' + roleTarget.id : null }; },
     roles: uid => ({ admin: adminIds.has(uid), mod: modIds.has(uid) }),
+    wardrobe: () => wardOwned().map(i => i.id),
     monitorPng: () => monCv.toDataURL(),
     typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
     mods: () => [...modIds], isStaff: () => isStaff(), doorBlocks: () => { const d = colliders.find(c => c.admin); const p = d.min.clone().add(d.max).multiplyScalar(0.5); return !!probe(p, 0.16); },
@@ -3702,7 +3703,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v43';
+  const GAME_VERSION = 'v44';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3951,7 +3952,7 @@
     try {
       if (!window.claude || !window.claude.use) return;
       const user = await window.claude.use('user');
-      if (user) { const me = await user.me(); if (me && me.id) myUserId = me.id; }
+      if (user) { const me = await user.me(); if (me && me.id) { myUserId = me.id; syncSpecialItems(); } }
     } catch (e) {}
   })();
 
@@ -4338,6 +4339,7 @@
       else {
         const fb = await firebaseBackend();
         myUserId = fb.uid; db = fb.db; lobby = fb.lobby; voiceFb = fb;
+        syncSpecialItems(); // my ID is known
         listenDb();
         startCoinSync();
         // register my ID -> uid, so the owner can make me an admin by my ID
@@ -5293,6 +5295,16 @@
     saveShop(); tagSound(); renderShop(); coinsChanged();
   }
   const slotOf = it => it.slot || 'head';
+  // special items (exclusive): every one I may wear goes into my wardrobe (shop.owned), so it shows in the wardrobe by
+  // the mirror: owners get all of them, admins the tiara. Called when my ID is known and when owners/admins/mods change
+  function syncSpecialItems() {
+    if (!myUserId) return [];
+    const added = SHOP_ITEMS.filter(it => it.exclusive && canWearItem(myUserId, it.id) && !shop.owned.includes(it.id)).map(it => it.id);
+    if (!added.length) return added;
+    shop.owned.push(...added); saveShop();
+    if (wardLabelCv) drawWardrobe();
+    return added;
+  }
   function toggleWear(it) {
     if (shop.wearing.includes(it.id)) shop.wearing = shop.wearing.filter(id => id !== it.id);
     else {
@@ -5405,17 +5417,18 @@
   function listenDb() {
       if (db) db.collection('owners').onSnapshot(snap => {
         ownerIds.clear(); snap.docs.forEach(d => ownerIds.add(d.id));
-        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0;
+        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0; syncSpecialItems();
       }, () => {});
       if (db) db.collection('voiceMutes').onSnapshot(snap => {
         voice.mutedAll = new Set(snap.docs.map(d => d.id)); applyMicEnabled(); lastListKey = '';
       }, () => {});
       if (db) db.collection('admins').onSnapshot(snap => {
         adminIds.clear(); snap.docs.forEach(d => adminIds.add(d.id));
+        syncSpecialItems();
       }, () => {});
       if (db) db.collection('mods').onSnapshot(snap => {
         modIds.clear(); snap.docs.forEach(d => modIds.add(d.id));
-        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0;
+        lastListKey = ''; badgeKey = ''; wristKey = ''; sendTimer = 0; syncSpecialItems();
       }, () => {});
       if (db) db.collection('bans').onSnapshot(snap => {
         bans = snap.docs.map(d => { const v = d.data() || {}; return { id: d.id, until: typeof v.until === 'number' ? v.until : 0, name: typeof v.name === 'string' ? v.name.slice(0, 14) : '' }; });
