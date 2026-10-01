@@ -1691,6 +1691,16 @@
   // time of day (the TIME key): day / sunset / night / auto, kept in localStorage
   let timeMode = (() => { try { return localStorage.getItem('forestTime') || 'day'; } catch (e) { return 'day'; } })();
   const TIME_MODES = ['day', 'sunset', 'night', 'auto'];
+  // graphics (the SUN key): LOW = the plain look, HIGH = real sun shadows, ULTRA = shadows + light rays and a glow
+  // around the sun. HIGH by default, kept in localStorage
+  const GFX_MODES = ['LOW', 'HIGH', 'ULTRA'];
+  let gfxMode = (() => { try { const g = localStorage.getItem('forestGraphics'); return GFX_MODES.includes(g) ? g : 'HIGH'; } catch (e) { return 'HIGH'; } })();
+  function nextGfxMode() {
+    gfxMode = GFX_MODES[(GFX_MODES.indexOf(gfxMode) + 1) % GFX_MODES.length];
+    try { localStorage.setItem('forestGraphics', gfxMode); } catch (e) {}
+    gfxGrace = GFX_GRACE_S; gfxSlowT = 0;
+    applyGraphics(); drawMonitor();
+  }
   function nextTimeMode() {
     timeMode = TIME_MODES[(TIME_MODES.indexOf(timeMode) + 1) % TIME_MODES.length];
     try { localStorage.setItem('forestTime', timeMode); } catch (e) {}
@@ -1740,7 +1750,7 @@
     c.font = '700 34px Consolas, monospace';
     if (kbMsg) { c.fillStyle = kbMsgColor; fitFont(c, kbMsg, 34, 456, 'Consolas, monospace'); c.fillText(kbMsg, 28, 262); } // a result for a few seconds
     else { c.fillStyle = rl === 'OFFLINE' ? '#ffb070' : '#aaffaa'; c.fillText('ROOM: ' + rl, 28, 255); }
-    c.fillStyle = '#9fd4ff'; c.font = '700 24px Consolas, monospace'; c.fillText('TURN: ' + turnMode, 28, 298); c.fillText('TIME: ' + timeMode.toUpperCase(), 270, 298);
+    c.fillStyle = '#9fd4ff'; c.font = '700 24px Consolas, monospace'; const st = 'TURN: ' + turnMode + '   TIME: ' + timeMode.toUpperCase() + '   GRAPHICS: ' + gfxMode; fitFont(c, st, 24, 456, 'Consolas, monospace'); c.fillText(st, 28, 298);
     monTex.needsUpdate = true;
   }
   function kbSay(msg) { toast(msg, 2.5); }
@@ -1785,13 +1795,13 @@
   // The model's own keys are hidden; new keys (copies of a letter key, 0.84 size) fill the same area:
   // 5 rows between the model's first and fourth row, up to 10 keys per row, centered
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['TIME', 'MTIME']],
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['TURN', 'MTURN'], ['SUN', 'MSUN'], ['TIME', 'MTIME']],
     [...'1234567890'].map(c => [c, c]),
     [...'QWERTYUIOP'].map(c => [c, c]),
     [...'ASDFGHJKL'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
     [...'ZXCVBNM'].map(c => [c, c]).concat([['SPC', 'SPC'], ['CLR', 'CLR'], ['DEL', 'DEL']])
   ];
-  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MTURN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
+  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MTURN: 0x3b4a5c, MSUN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
   const KEY_S = 0.84;
   {
     // each model key's center (pcGroup space) and the key area
@@ -1863,6 +1873,7 @@
     if (v === 'MID') { showMyId(); return; }
     if (v === 'MTURN') { nextTurnMode(); return; }
     if (v === 'MTIME') { nextTimeMode(); return; }
+    if (v === 'MSUN') { nextGfxMode(); return; }
     if (kbMode === 'id' && !/^M(CODE|NAME|COLOR)$/.test(v)) {
       // ID screen: for players the typing keys and ENTER do nothing. The owner types another player's ID + ENTER to
       // make them an admin (or remove it).
@@ -3578,7 +3589,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v39';
+  const GAME_VERSION = 'v40';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4494,6 +4505,125 @@
     else { const tgt = TIME_TARGET[timeMode] ?? 0.27; let d = tgt - timeP; if (d > 0.5) d -= 1; if (d < -0.5) d += 1; timeP = (timeP + d * Math.min(1, dt * 1.5) + 1) % 1; }
     applyTime(timeP);
   }
+  // ================= Graphics: LOW / HIGH / ULTRA =================
+  // HIGH/ULTRA: the sun light casts real shadows. Its shadow area (28 m square) follows the player, snapped to a 2 m
+  // grid so the shadows don't shimmer while moving; the light's direction comes from the time of day (applyTime).
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03;
+  Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 75 });
+  sun.shadow.camera.updateProjectionMatrix();
+  scene.add(sun.target);
+  let shadowsOn = false, shadowScanT = 0;
+  const _gDir = new THREE.Vector3(), _gC = new THREE.Vector3();
+  // what casts/receives: solid lit things. Not the sky, sun, moon, clouds, glass/water (transparent or shader),
+  // flat UI (basic materials) or instanced crowds (grass, drops)
+  function markShadows() {
+    scene.traverse(o => {
+      if (!o.isMesh || o.userData.gfxDone) return;
+      o.userData.gfxDone = true;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      const solid = m && !m.isMeshBasicMaterial && !m.isShaderMaterial && !m.transparent && m !== cloudMat && o !== skyDome && o !== sunDisc && o !== moon;
+      o.castShadow = solid && !o.isInstancedMesh;
+      o.receiveShadow = solid;
+    });
+  }
+  // ULTRA: light rays (crossed soft planes along the sun's direction, drifting in and out around the player) and a
+  // glow around the sun disc. Only while the sun is up: none at night
+  const rayTex = (() => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+    const x = c.getContext('2d');
+    const gv = x.createLinearGradient(0, 0, 0, 256);
+    gv.addColorStop(0, 'rgba(255,255,255,0)'); gv.addColorStop(0.25, 'rgba(255,255,255,0.9)');
+    gv.addColorStop(0.75, 'rgba(255,255,255,0.55)'); gv.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = gv; x.fillRect(0, 0, 64, 256);
+    x.globalCompositeOperation = 'destination-in';
+    const gh = x.createLinearGradient(0, 0, 64, 0);
+    gh.addColorStop(0, 'rgba(0,0,0,0)'); gh.addColorStop(0.5, 'rgba(0,0,0,1)'); gh.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = gh; x.fillRect(0, 0, 64, 256);
+    return new THREE.CanvasTexture(c);
+  })();
+  const rays = new THREE.Group(); rays.visible = false; scene.add(rays);
+  const rayGeo = new THREE.PlaneGeometry(1.4, 22), RAY_UP = new THREE.Vector3(0, 1, 0);
+  const shafts = [];
+  for (let i = 0; i < 12; i++) {
+    const mat = new THREE.MeshBasicMaterial({ map: rayTex, color: 0xffe9b8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    const g = new THREE.Group(), a = new THREE.Mesh(rayGeo, mat), b = new THREE.Mesh(rayGeo, mat); b.rotation.y = Math.PI / 2;
+    g.add(a, b); g.scale.set(0.8 + Math.random() * 1.6, 1, 1);
+    g.userData = { mat, phase: Math.random() * 6.28, speed: 0.25 + Math.random() * 0.25, base: new THREE.Vector3(), placed: false, wasLow: true };
+    rays.add(g); shafts.push(g);
+  }
+  function placeShaft(g, c) {
+    const ang = Math.random() * Math.PI * 2, d = 4 + Math.random() * 13;
+    g.userData.base.set(c.x + Math.cos(ang) * d, 0, c.z + Math.sin(ang) * d); g.userData.placed = true;
+  }
+  const sunHalo = new THREE.Sprite(new THREE.SpriteMaterial({ map: cosGlow(), color: 0xffe2a8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, transparent: true, opacity: 0.85 }));
+  sunHalo.scale.set(60, 60, 1); sunHalo.visible = false; scene.add(sunHalo);
+  let gfxT = 0;
+  function applyGraphics() {
+    const on = gfxMode !== 'LOW', size = gfxMode === 'ULTRA' ? 2048 : 1024;
+    if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+    if (on !== shadowsOn) {
+      shadowsOn = on; renderer.shadowMap.enabled = on; sun.castShadow = on;
+      shadowDiscMat.visible = !on; shadowMat.visible = !on; // the old fake round shadows
+      if (on) { markShadows(); shadowScanT = 2; }
+      scene.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.needsUpdate = true; }); });
+    }
+  }
+  // safety net: if the headset can't keep up at HIGH/ULTRA (under GFX_MIN_FPS for GFX_SLOW_S seconds in VR), go one
+  // level down by itself, say so, and keep that level. Not in the first GFX_GRACE_S seconds after entering VR or a
+  // level change (one-time pauses while new shaders are prepared).
+  const GFX_MIN_FPS = 58, GFX_SLOW_S = 4, GFX_GRACE_S = 5;
+  let gfxSlowT = 0, gfxGrace = GFX_GRACE_S, gfxLastNow = 0, gfxEma = 1 / 72;
+  function watchSmooth(fdt, inVR) {
+    if (!inVR || gfxMode === 'LOW') { gfxSlowT = 0; return false; }
+    if (gfxGrace > 0) { gfxGrace -= fdt; gfxEma = 1 / 72; return false; }
+    gfxEma += (Math.min(fdt, 0.25) - gfxEma) * 0.1;
+    if (1 / gfxEma < GFX_MIN_FPS) gfxSlowT += fdt; else gfxSlowT = Math.max(0, gfxSlowT - fdt);
+    if (gfxSlowT < GFX_SLOW_S) return false;
+    gfxMode = GFX_MODES[GFX_MODES.indexOf(gfxMode) - 1];
+    try { localStorage.setItem('forestGraphics', gfxMode); } catch (e) {}
+    applyGraphics(); gfxSlowT = 0; gfxGrace = GFX_GRACE_S;
+    monSay('GRAPHICS: ' + gfxMode + ' (AUTO)', '#ffb070', 6); toast('הגרפיקה ירדה ל-' + gfxMode + ' כדי שהמשחק יישאר חלק', 3);
+    return true;
+  }
+  renderer.xr.addEventListener('sessionstart', () => { gfxGrace = GFX_GRACE_S; gfxSlowT = 0; });
+  function updateGraphics(dt) {
+    const now = performance.now(); if (gfxLastNow) watchSmooth((now - gfxLastNow) / 1000, renderer.xr.isPresenting); gfxLastNow = now;
+    gfxT += dt;
+    const c = rig.position;
+    _gDir.copy(sun.position).normalize();                     // applyTime put the light at dir * 30
+    _gC.set(Math.round(c.x / 2) * 2, 0, Math.round(c.z / 2) * 2);
+    sun.target.position.copy(_gC); sun.position.copy(_gC).addScaledVector(_gDir, 35);
+    if (shadowsOn && (shadowScanT -= dt) <= 0) { markShadows(); shadowScanT = 2; } // new things (players, clothes)
+    const ultra = gfxMode === 'ULTRA', el = sunDisc.position.y / 150;   // the sun's height: sin(elevation)
+    const rayK = Math.min(1, Math.max(0, (el - 0.15) / 0.2));           // rays fade in from just above the horizon
+    rays.visible = ultra && rayK > 0;
+    if (rays.visible) {
+      const sd = _gDir.copy(sunDisc.position).normalize();
+      shafts.forEach(g => {
+        const u = g.userData, w = Math.sin(gfxT * u.speed + u.phase);
+        if (w < -0.95 && !u.wasLow || !u.placed) placeShaft(g, c);     // moved while invisible
+        u.wasLow = w < -0.95;
+        u.mat.opacity = 0.09 * rayK * Math.max(0, w);
+        g.quaternion.setFromUnitVectors(RAY_UP, sd);
+        g.position.copy(u.base).addScaledVector(sd, 11);
+      });
+    }
+    sunHalo.visible = ultra && sunDisc.visible && el > -0.05;
+    if (sunHalo.visible) { sunHalo.position.copy(sunDisc.position).multiplyScalar(0.97); sunHalo.material.color.copy(sunDisc.material.color); sunHalo.material.opacity = 0.85 * Math.min(1, (el + 0.05) / 0.2); }
+  }
+  applyGraphics();
+  window.__gfxTest = {
+    mode: () => gfxMode, set: m => { gfxMode = m; applyGraphics(); drawMonitor(); return m; },
+    press: () => { const k = kbKeys.find(m => m.userData.value === 'MSUN'); if (!k) return null; k.userData.cool = 0; pressKey(k); return gfxMode; },
+    look: () => { let cast = 0, recv = 0; scene.traverse(o => { if (o.isMesh && o.castShadow) cast++; if (o.isMesh && o.receiveShadow) recv++; });
+      return { shadows: renderer.shadowMap.enabled && sun.castShadow, map: sun.shadow.mapSize.x, rays: rays.visible, rayOpacity: +Math.max(...shafts.map(s => s.userData.mat.opacity)).toFixed(3), halo: sunHalo.visible,
+        fakeShadows: shadowDiscMat.visible, cast, recv, sunUp: +(sunDisc.position.y / 150).toFixed(2) }; },
+    step: dt => { updateTime(dt); updateGraphics(dt); return true; },
+    // feed the safety net frames at a given fps (as if in VR) for some seconds; returns the level after
+    smooth: (fps, secs) => { for (let t = 0; t < secs; t += 1 / fps) watchSmooth(1 / fps, true); return gfxMode; },
+    resetSmooth: () => { gfxGrace = 0; gfxSlowT = 0; gfxEma = 1 / 72; return true; }
+  };
   window.__timeTest = { mode: () => timeMode, p: () => timeP, press: () => { const k = kbKeys.find(m => m.userData.value === 'MTIME'); if (!k) return null; k.userData.cool = 0; pressKey(k); return timeMode; },
     set: m => { timeMode = m; drawMonitor(); return m; }, jump: p => { timeP = p; applyTime(p); return true; },
     look: () => ({ sunI: sun.intensity, hemiI: hemi.intensity, hemiSky: hemi.color.getHexString(), fog: scene.fog.color.getHexString(), stars: stars.visible ? +stars.material.opacity.toFixed(2) : 0, moon: moon.visible, sunDisc: sunDisc.visible }),
@@ -4504,6 +4634,7 @@
     updateDecor(dt);
     updatePark(dt);
     updateTime(dt);
+    updateGraphics(dt);
     const inVR = renderer.xr.isPresenting;
     const active = inVR || deskMode;
     voiceFrame(); // voice positions / volumes / speaking signs (runs whenever voice is on)
