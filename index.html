@@ -2609,7 +2609,8 @@
         as('u_ADMINTEST', true, null); pressBadge(bOf('NONE'));
         ok('board: admin presses none -> no tag', myTagNow() === '');
         as(OWNER_ID, false, null); pressBadge(bOf('ADMIN')); pressBadge(bOf('OWNER')); refreshBadgeBoard();
-        const lit = badgeButtons.filter(b => b.mesh.material.emissive.getHex() !== 0).map(b => b.id);
+        // the tag buttons only (the crown/tiara buttons light up by what is worn, not by the tag)
+        const lit = badgeButtons.filter(b => !b.cosId && b.mesh.material.emissive.getHex() !== 0).map(b => b.id);
         ok('board: owner picks OWNER -> OWNER lit and bigger, others not', myTagNow() === 'OWNER' && lit.join() === 'OWNER' && bOf('OWNER').mesh.scale.x > 1.1 && bOf('ADMIN').mesh.scale.x === 1, 'lit: ' + lit.join());
         // the board is on the wall opposite the door, facing the door, at eye height
         badgeBoard.updateWorldMatrix(true, false);
@@ -3264,6 +3265,11 @@
     const model = new THREE.Group(); model.scale.setScalar(PENGUIN_S); root.add(model);
     const bodyParts = new THREE.Group(); model.add(bodyParts);
     const furMats = [], flippers = [], eyes = [];
+    // the head turns on a neck pivot (model y = -0.75): headGroup sits at the neck, headInner moves the parts back so
+    // they keep their places. Head, beak and eyes (pivot above y = -0.9) go in, with the clothes and the mouth item
+    const NECK_Y = -0.75, HEAD_MIN_Y = -0.9;
+    const headGroup = new THREE.Group(); headGroup.position.y = NECK_Y; model.add(headGroup);
+    const headInner = new THREE.Group(); headInner.position.y = -NECK_Y; headGroup.add(headInner);
     const tint = new THREE.Color(color);
     PENGUIN.parts.forEach((p, i) => {
       const c = new THREE.Color(p.color[0], p.color[1], p.color[2]);
@@ -3297,24 +3303,24 @@
         flippers.push({ pv, rest, stretch, mesh, tipLocal, len: Math.max(0.05, len), side: p.pivot[0] < 0 ? 'l' : 'r' });
       } else {
         mesh.position.fromArray(p.pivot);
-        bodyParts.add(mesh);
+        (p.pivot[1] > HEAD_MIN_Y ? headInner : bodyParts).add(mesh);
         if (p.kind === 'eye') eyes.push(mesh);
       }
     });
     const shadow = new THREE.Mesh(shadowGeo, shadowMat);
     shadow.position.y = PENGUIN.bottom; shadow.scale.setScalar(1.3 / PENGUIN_S);
     bodyParts.add(shadow);
-    const cosmetics = new THREE.Group(); model.add(cosmetics);
+    const cosmetics = new THREE.Group(); headInner.add(cosmetics);
     const bodyRef = new THREE.Object3D(), headRef = new THREE.Object3D();
     const hl = new THREE.Object3D(), hr = new THREE.Object3D();
     const handCos = new THREE.Group(); hl.add(handCos);
-    const mouthCos = new THREE.Group(); mouthCos.position.set(0, -0.06, -0.8); mouthCos.scale.setScalar(1 / PENGUIN_S); model.add(mouthCos);
+    const mouthCos = new THREE.Group(); mouthCos.position.set(0, -0.06, -0.8); mouthCos.scale.setScalar(1 / PENGUIN_S); headInner.add(mouthCos);
     const flame = new THREE.Mesh(new THREE.SphereGeometry(0.7, 16, 10), flameMat);
     flame.visible = false;
     const label = withLabel ? makeLabel(name) : new THREE.Object3D();
     root.add(bodyRef, headRef, hl, hr, flame, label);
     scene.add(root);
-    return { penguin: true, cosmetics, handCos, mouthCos, wearKey: '', root, model, torso: bodyParts, body: bodyRef, head: headRef, hl, hr, arms: [], eyes, flame, label,
+    return { penguin: true, cosmetics, handCos, mouthCos, headGroup, headInner, headQ: null, wearKey: '', root, model, torso: bodyParts, body: bodyRef, head: headRef, hl, hr, arms: [], eyes, flame, label,
       mat: furMats[0], furMats, skin: furMats[0], dark: furMats[0], flippers, name, color, style: 'penguin',
       bodyMesh: bodyParts, phase: Math.random() * 6, blink: 1 + Math.random() * 3,
       tH: V3(), tL: V3(), tR: V3(), yaw: 0, it: false, imm: false, ready: false };
@@ -3337,12 +3343,19 @@
     for (const c of colliders) if (p.x >= c.min.x && p.x <= c.max.x && p.z >= c.min.z && p.z <= c.max.z && c.max.y <= p.y + 0.05 && c.max.y > g) g = c.max.y;
     return g;
   }
+  const _hgQ = new THREE.Quaternion();
   function posePenguin(a, h, l, r, yaw) {
     if (a !== selfAv) { const minY = groundBelow(h) + PENGUIN_FEET; if (h.y < minY) h = h.clone().setY(minY); }
     a.hl.position.copy(l); a.hr.position.copy(r);
     a.hl.rotation.y = yaw; a.hr.rotation.y = yaw;
     a.model.position.copy(h);
     a.model.rotation.y = yaw;
+    if (a.headGroup) {
+      if (a.headQ) {
+        _hgQ.setFromAxisAngle(UP, yaw).invert().multiply(a.headQ);
+        if (a === selfAv || a === mirrorAv) a.headGroup.quaternion.copy(_hgQ); else a.headGroup.quaternion.slerp(_hgQ, 0.35); // others: smoothed
+      } else a.headGroup.quaternion.identity();
+    }
     a.head.position.copy(h);
     a.body.position.set(h.x, h.y - 0.45, h.z);
     a.flame.position.copy(a.body.position);
@@ -3589,7 +3602,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v40';
+  const GAME_VERSION = 'v41';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -3762,7 +3775,8 @@
   const shop = { coins: 0, owned: [], wearing: [] };
   try {
     const sv = JSON.parse(localStorage.getItem('forestTagShop') || 'null');
-    if (sv && typeof sv.coins === 'number') { shop.coins = Math.max(0, Math.floor(sv.coins)); shop.owned = Array.isArray(sv.owned) ? sv.owned.filter(id => typeof id === 'string') : []; shop.wearing = Array.isArray(sv.wearing) ? sv.wearing.filter(id => shop.owned.includes(id)) : []; }
+    if (sv && typeof sv.coins === 'number') { shop.coins = Math.max(0, Math.floor(sv.coins)); shop.owned = Array.isArray(sv.owned) ? sv.owned.filter(id => typeof id === 'string') : []; shop.wearing = Array.isArray(sv.wearing) ? sv.wearing.filter(id => shop.owned.includes(id)) : [];
+      const seenSlot = new Set(); shop.wearing = shop.wearing.reverse().filter(id => { const s = ITEM_BY_ID[id] ? (ITEM_BY_ID[id].slot || 'head') : id; if (seenSlot.has(s)) return false; seenSlot.add(s); return true; }).reverse(); }
   } catch (e) {}
   function saveShop() { try { localStorage.setItem('forestTagShop', JSON.stringify(shop)); } catch (e) {} }
   function saveName(n) { try { localStorage.setItem('forestTagName', n); } catch (e) {} }
@@ -3804,6 +3818,8 @@
     if (o.color !== color) { o.mat.color.set(color); o.color = color; }
     o.tH.copy(h); o.tL.copy(l); o.tR.copy(r);
     o.yaw = num(pr.y, -10, 10) || 0;
+    if (Array.isArray(pr.q) && pr.q.length === 4 && pr.q.every(v => typeof v === 'number' && Math.abs(v) <= 1.01) && pr.q.some(v => v !== 0)) (o.headQ || (o.headQ = new THREE.Quaternion())).fromArray(pr.q).normalize();
+    else o.headQ = null;
     o.uid = (typeof pr.u === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(pr.u)) ? pr.u : null;
     // tag only if that player is allowed it (OWNER = the owner's uid, ADMIN = owner/admin uid)
     setAvatarTag(o, typeof pr.t === 'string' && tagAllowed(pr.t, o.uid) ? pr.t : '');
@@ -4257,6 +4273,7 @@
       selfAv.head.visible = false;
       if (selfAv.cosmetics) selfAv.cosmetics.visible = false;
       selfAv.torso.visible = false;
+      if (selfAv.headGroup) selfAv.headGroup.visible = false;
       selfAv.root.traverse(o => o.layers.set(4));
     }
     return selfAv;
@@ -4274,6 +4291,78 @@
     return out.copy(h.ctrl.position).add(view.position).sub(_hwShoulder).multiplyScalar(ARM_REACH)
       .add(_hwShoulder).add(rig.position);
   }
+
+  // ---- One hand against the world (VR hand locomotion) ----
+  // A touching hand stays on its anchor (the body moves instead). On a WALL (|normal.y| < 0.5) the anchor slides down,
+  // starting at WALL_SLIDE0 m/s and speeding up by WALL_SLIDE_ACC m/s² to WALL_SLIDE_MAX, so you can't hang on a wall
+  // (not while standing on the ground: that would pull the body into the floor).
+  // A free hand is checked along its whole way since last frame (SWEEP_HAND steps, for moves of 4 cm to 1 m; longer is
+  // a teleport/respawn): the first surface it meets is where it grabs, so a fast hand can't pass through a thin wall.
+  // Over the keyboard etc. the desk doesn't stop the hand (see handProbeSkip).
+  const WALL_SLIDE0 = 1.2, WALL_SLIDE_ACC = 10, WALL_SLIDE_MAX = 6, SWEEP_HAND = 0.03;
+  const _hcA = new THREE.Vector3(), _hcP = new THREE.Vector3();
+  function handSweep(from, to) {
+    const d = from.distanceTo(to);
+    if (d > 0.04 && d < 1.0) {
+      const steps = Math.ceil(d / SWEEP_HAND);
+      for (let i = 1; i <= steps; i++) {
+        _hcP.lerpVectors(from, to, i / steps);
+        const hit = probe(_hcP, HAND_R, handProbeSkip(_hcP));
+        if (hit) return hit;
+      }
+      return null;
+    }
+    return probe(to, HAND_R, handProbeSkip(to));
+  }
+  // returns 1 if the hand holds on (and adds its pull to move), 0 if it's free
+  function handContact(h, cur, dt, move, onGround) {
+    if (h.touch) {
+      if (_hcA.copy(cur).sub(h.anchor).dot(h.normal) > 0.02) { h.touch = false; h.cooldown = 0.08; return 0; }
+      if (Math.abs(h.normal.y) < 0.5 && !onGround) {
+        h.anchor.y -= h.slide * dt;
+        h.slide = Math.min(WALL_SLIDE_MAX, h.slide + WALL_SLIDE_ACC * dt);
+      }
+      move.add(_hcA.copy(h.anchor).sub(cur));
+      return 1;
+    }
+    if (h.cooldown > 0) return 0;
+    const hit = handSweep(h.lastWorld, cur);
+    if (!hit) return 0;
+    h.touch = true; h.anchor.copy(hit.surface); h.normal.copy(hit.normal); h.slide = WALL_SLIDE0;
+    move.add(_hcA.copy(h.anchor).sub(cur));
+    const impact = h.lastWorld.distanceTo(cur) / dt;
+    if (impact > 0.6) { thud(impact); buzz(h.pad, Math.min(1, 0.15 + impact * 0.08), 25); }
+    return 1;
+  }
+  // test hooks: fake hands against a test wall, and the head of a penguin
+  window.__handTest = {
+    wall: (min, max) => { const c = { min: V3(...min), max: V3(...max), test: true }; colliders.push(c); return colliders.length; },
+    headOf: uid => { const o = others.get(uid); return o && o.headQ ? o.headQ.toArray().map(v => +v.toFixed(3)) : null; },
+    clearWalls: () => { for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].test) colliders.splice(i, 1); return true; },
+    // one hand: from last -> cur over frames; returns its state after each frame
+    run: (frames, onGround = false) => {
+      const hh = { touch: false, anchor: V3(), normal: V3(), cooldown: 0, lastWorld: V3(...frames[0]), pad: null, slide: 0 }, out = [];
+      for (let i = 1; i < frames.length; i++) { const mv = V3(); const c = handContact(hh, V3(...frames[i]), 1 / 72, mv, onGround);
+        out.push({ hold: c, anchor: hh.anchor.toArray().map(v => +v.toFixed(3)), move: mv.toArray().map(v => +v.toFixed(4)), slide: +hh.slide.toFixed(2) }); hh.lastWorld.copy(V3(...frames[i])); }
+      return out;
+    },
+    // picture of a penguin at (60, 1, 60) with its head at rotation q, seen from the side and from the front
+    headShot: q => { const a = makeAvatar('#3388ff', '', false, 'penguin'); a.headQ = new THREE.Quaternion().fromArray(q);
+      for (let i = 0; i < 40; i++) poseAvatar(a, V3(60, 1, 60), V3(59.7, 0.6, 59.9), V3(60.3, 0.6, 59.9), 0);
+      const r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }); r.setSize(600, 300); r.setScissorTest(true);
+      const cam = new THREE.PerspectiveCamera(40, 1, 0.05, 50);
+      [[V3(62.2, 1, 60), 0], [V3(60, 1, 57.8), 300]].forEach(([p, x]) => { r.setViewport(x, 0, 300, 300); r.setScissor(x, 0, 300, 300); cam.position.copy(p); cam.lookAt(60, 0.75, 60); r.render(scene, cam); });
+      const u = r.domElement.toDataURL('image/png'); r.dispose(); disposeAvatar(a); return u; },
+    head: (q, yaw, frames = 1, who = 'other') => {
+      const a = who === 'self' ? ensureSelfAv() : makeAvatar('#3388ff', '', false, 'penguin'); a.headQ = new THREE.Quaternion().fromArray(q).normalize();
+      for (let i = 0; i < frames; i++) poseAvatar(a, V3(0, 1, 0), V3(-0.3, 0.7, -0.2), V3(0.3, 0.7, -0.2), yaw);
+      const got = a.headGroup.getWorldQuaternion(new THREE.Quaternion()), r = { angleDeg: +(got.angleTo(a.headQ) * 180 / Math.PI).toFixed(3),
+        inHead: a.headInner.children.filter(c => c.isMesh).length, eyesIn: a.eyes.every(e => e.parent === a.headInner), cosIn: a.cosmetics.parent === a.headInner, mouthIn: a.mouthCos.parent === a.headInner,
+        visible: a.headGroup.visible };
+      if (who !== 'self') disposeAvatar(a); else a.headQ = null;
+      return r;
+    }
+  };
 
   // ---- Height calibration (VR) ----
   // For the first CALIB_TIME seconds after entering VR (or after pressing the wrist button) the highest head height
@@ -4693,20 +4782,7 @@
         if (!h.side) { h.visual.visible = false; continue; }
         h.visual.visible = true;
         const cur = handWorld(h, V3());
-        if (h.touch) {
-          const diff = cur.clone().sub(h.anchor);
-          if (diff.dot(h.normal) > 0.02) { h.touch = false; h.cooldown = 0.08; }
-          else { move.add(h.anchor.clone().sub(cur)); count++; }
-        } else if (h.cooldown <= 0) {
-          // over the keyboard the desk doesn't stop the hand, so it can reach the keys (see handProbeSkip)
-          const hit = probe(cur, HAND_R, handProbeSkip(cur));
-          if (hit) {
-            h.touch = true; h.anchor.copy(hit.surface); h.normal.copy(hit.normal);
-            move.add(h.anchor.clone().sub(cur)); count++;
-            const impact = h.lastWorld.distanceTo(cur) / dt;
-            if (impact > 0.6) { thud(impact); buzz(h.pad, Math.min(1, 0.15 + impact * 0.08), 25); }
-          }
-        }
+        count += handContact(h, cur, dt, move, onGroundPrev);
         h.lastWorld.copy(cur);
       }
       if (count) {
@@ -4866,6 +4942,7 @@
       if (mirrorAv.it !== myIt) setAvatarIt(mirrorAv, myIt);
       mirrorAv.root.visible = true;
       camera.getWorldDirection(tmp);
+      mirrorAv.headQ = camera.quaternion;
       poseAvatar(mirrorAv, headW.clone(), handPos[0], handPos[1], Math.atan2(-tmp.x, -tmp.z));
     } else if (mirrorAv) mirrorAv.root.visible = false;
     selfAv.root.visible = true;
@@ -4873,6 +4950,7 @@
     selfAv.flame.visible = false;
     camera.getWorldDirection(tmp);
     poseAvatar(selfAv, headW.clone(), handPos[0], handPos[1], Math.atan2(-tmp.x, -tmp.z));
+    if (selfAv.headGroup) selfAv.headGroup.visible = false; // first person: don't see my own eyes and beak from inside
     // hand item stuck to the hand in VR (not when the lollipop is in the mouth; outside VR as before)
     if (inVR && !lolliInMouth()) poseHandItem(selfAv); else if (selfAv.handCos) selfAv.handCos.quaternion.identity();
     if (myHammer && inVR) {
@@ -4973,6 +5051,7 @@
         room.presence({
           h: r(headW), l: r(handPos[0]), r: r(handPos[1]),
           y: Math.round(Math.atan2(-tmp.x, -tmp.z) * 100) / 100,
+          q: camera.quaternion.toArray().map(v => Math.round(v * 1000) / 1000),
           it: myIt ? 1 : 0, im: myImm > 0 ? 1 : 0, n: myName, c: myColor, s: myStyle, u: myUserId, w: shop.wearing.filter(id => canWearItem(myUserId, id)).join(','), hm: heldHammer, lm: lolliInMouth() ? 1 : 0, t: myTagNow()
         }).catch(() => {});
       }
@@ -5099,13 +5178,15 @@
   function closeShop() { if ($('shopBox').hidden) return; $('shopBox').hidden = true; termOpen = false; }
   function buyItem(it) {
     if (shop.coins < it.price || shop.owned.includes(it.id)) return;
-    shop.owned.push(it.id); shop.wearing = shop.wearing.filter(id => id !== it.id).concat(it.id);
+    // what I wear goes off that place on the body (like toggleWear); back on if the server refuses the purchase
+    const wasWearing = shop.wearing.slice();
+    shop.owned.push(it.id); shop.wearing = shop.wearing.filter(id => { const o = ITEM_BY_ID[id]; return id !== it.id && (!o || slotOf(o) !== slotOf(it)); }).concat(it.id);
     if (coinSrv) {
       // online: the purchase is a server write (spent += price); the server refuses it if the balance is too low
       const spent = (coinSrv.spent || 0) + it.price;
       coinSrv.spent = spent; coinsChanged();
       db.update('coins/' + myUserId, { spent }).catch(() => {
-        shop.owned = shop.owned.filter(id => id !== it.id); shop.wearing = shop.wearing.filter(id => id !== it.id);
+        shop.owned = shop.owned.filter(id => id !== it.id); shop.wearing = wasWearing.filter(id => shop.owned.includes(id));
         saveShop(); renderShop(); drawShopTags(); toast('הקנייה לא הצליחה', 2); tone(160, 0.15, 'square', 0.08);
       });
     } else shop.coins -= it.price;
