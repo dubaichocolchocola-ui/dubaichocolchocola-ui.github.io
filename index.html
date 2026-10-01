@@ -1210,6 +1210,7 @@
   let adminDoor = null, adminDoorOpenZ = 0, adminDoorShut = 0;
   const standHammers = {}, adminButtons = [];
   let adminFarWall = null, adminBanWall = null, badgeBoard = null; const badgeButtons = [];
+  let flyStandCollider = null, flyStandButtons = []; // the FLY hammer stand (hands aren't stopped by it next to its buttons)
   let banCv = null, banTex = null, banPlane = null, bans = [], banKey = '';
   const BAN_ROW_Y0 = 96, BAN_ROW_H = 40, BAN_PER_PAGE = 5;
   const BAN_PREV = [392, 490], BAN_NEXT = [22, 120], BAN_FOOT_Y = 294; // footer buttons (canvas px)
@@ -1289,6 +1290,7 @@
     if (!o) return fail('no player');
     if (isOwnerUid(o.uid)) { toast('אי אפשר להשתמש בפטיש על הבעלים של המשחק 😉', 2); return fail(name + ' is an owner'); }
     if (!isStaff()) return fail('not staff');
+    if (heldHammer === 'FLY') return null; // flying, not hitting
     if (heldHammer === 'BAN' && !isAdmin()) return fail('BAN is for admins');
     if (!room) return fail('offline');
     tone(90, 0.3, 'square', 0.2, -40);
@@ -1308,7 +1310,27 @@
   }
   let hammerMsg = '', hammerMsgColor = '#fff', hammerMsgUntil = 0;
   function hammerSay(msg, color) { hammerMsg = msg; hammerMsgColor = color; hammerMsgUntil = Date.now() + 3500; wristKey = ''; }
-  const HAMMER_LABEL = { KICK: 'KICK', BAN: 'BAN', KICKS: 'KICK S' };
+  const HAMMER_LABEL = { KICK: 'KICK', BAN: 'BAN', KICKS: 'KICK S', FLY: 'FLY' };
+  // ---- Flying: the FLY button (owners and admins) or the FLY hammer in the hand (owners, admins, MODs) ----
+  // The left stick flies toward where you look (FLY_SPEED m/s at full push, sideways too), with no gravity; letting go
+  // of the stick hovers. On the computer: Space up, Shift down.
+  let flyMode = false;
+  const FLY_SPEED = 5, FLY_DEAD = 0.15, _flyF = new THREE.Vector3(), _flyR = new THREE.Vector3(), _flyW = new THREE.Vector3();
+  const canFly = () => (flyMode && isAdmin()) || (heldHammer === 'FLY' && isStaff());
+  function flyStep(dt) {
+    const lh = hands.find(x => x.side === 'left');
+    const ax = lh && lh.pad && lh.pad.axes;
+    let sx = ax ? (ax.length >= 4 ? ax[2] : ax[0]) || 0 : 0, sy = ax ? (ax.length >= 4 ? ax[3] : ax[1]) || 0 : 0;
+    if (Math.hypot(sx, sy) < FLY_DEAD) { sx = 0; sy = 0; }
+    camera.getWorldDirection(_flyF);                                     // where I look (up/down too)
+    _flyR.crossVectors(_flyF, camera.up).normalize();                    // my right
+    _flyW.copy(_flyF).multiplyScalar(-sy).addScaledVector(_flyR, sx);   // stick forward (-y) = toward the look
+    if (_flyW.lengthSq() > 1) _flyW.normalize();
+    _flyW.multiplyScalar(FLY_SPEED);
+    vel.lerp(_flyW, Math.min(1, dt * 6));                                // eases in/out, so it never jerks
+    return _flyW.length();
+  }
+
   function makeHammer(id) {
     const g = new THREE.Group();
     const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.62, 8), new THREE.MeshStandardMaterial({ color: 0x3a1c0e, roughness: 0.8 }));
@@ -1333,6 +1355,13 @@
   }
   // "My tag" board: pick OWNER / ADMIN / none; only a tag you're allowed to wear can be picked
   function pressBadge(b) {
+    if (b.kind === 'fly') {
+      if (!isAdmin()) { toast('רק בעלים ואדמינים יכולים לעוף', 2); tone(160, 0.15, 'square', 0.08); return; }
+      flyMode = !flyMode; badgeKey = '';
+      tone(flyMode ? 880 : 500, 0.1, 'triangle', 0.12);
+      toast(flyMode ? 'מצב תעופה ✈ הג\'ויסטיק השמאלי טס לאן שמסתכלים' : 'חזרת לרגליים', 2.5);
+      return;
+    }
     if (b.cosId) {
       const it = ITEM_BY_ID[b.cosId];
       if (!canWearItem(myUserId, it.id)) { toast(it.exclusive === 'owner' ? 'רק הבעלים יכול לשים את זה' : 'רק אדמינים', 2); tone(160, 0.15, 'square', 0.08); return; }
@@ -1355,11 +1384,11 @@
   let badgeKey = '';
   function refreshBadgeBoard() {
     const cur = myTagNow() || 'NONE';
-    const key = cur + '|' + badgeButtons.filter(b => b.cosId && shop.wearing.includes(b.cosId)).map(b => b.cosId).join();
+    const key = cur + '|' + badgeButtons.filter(b => b.cosId && shop.wearing.includes(b.cosId)).map(b => b.cosId).join() + '|' + flyMode;
     if (key === badgeKey) return;
     badgeKey = key;
     badgeButtons.forEach(b => {
-      const on = b.cosId ? shop.wearing.includes(b.cosId) : b.id === cur;
+      const on = b.kind === 'fly' ? flyMode : b.cosId ? shop.wearing.includes(b.cosId) : b.id === cur;
       b.mesh.material.emissive.setHex(on ? b.color : 0x000000);
       b.mesh.material.emissiveIntensity = on ? 0.9 : 0;
       b.mesh.scale.setScalar(on ? 1.15 : 1);
@@ -1408,7 +1437,7 @@
   // one frame of hit detection: the hammer head (world) must touch a player's head or body while swinging fast
   function hammerSwingCheck(dt, head, speed) {
     hammerCool = Math.max(0, hammerCool - dt);
-    if (!heldHammer || hammerCool > 0 || speed < HAMMER_MIN_SPEED) return null;
+    if (!heldHammer || heldHammer === 'FLY' || hammerCool > 0 || speed < HAMMER_MIN_SPEED) return null; // the FLY hammer is for flying, it hits nobody
     // the nearest player the head touches (players standing close together: hit the one you actually swung at)
     let best = null, bd = Infinity;
     for (const o of others.values()) {
@@ -1487,7 +1516,7 @@
         badgeButtons.push({ mesh: m, id, color: col });
       });
       // special clothes: OWNER crown and ADMIN tiara, a button each under the board with the item floating in front of it
-      [['ownercrown', 'OWNER', 0x8b5a2b, -0.1], ['admintiara', 'ADMIN', 0xd8332a, 0.1]].forEach(([cosId, text, col, x]) => {
+      [['ownercrown', 'OWNER', 0x8b5a2b, -0.18], ['admintiara', 'ADMIN', 0xd8332a, 0]].forEach(([cosId, text, col, x]) => {
         const it = ITEM_BY_ID[cosId];
         const m = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: col, roughness: 0.5, emissive: 0x000000 }));
         m.position.set(x, -0.25, 0.012);
@@ -1504,6 +1533,17 @@
         const spin = prev.children.find(c => c.isMesh); if (spin) { const ob = spin.onBeforeRender; spin.onBeforeRender = (...a) => { prev.rotation.y = performance.now() * 0.0008; if (ob) ob(...a); }; }
         badgeButtons.push({ mesh: m, id: 'COS_' + cosId, cosId, color: col });
       });
+      // flying on/off (owners and admins): a blue button next to them
+      {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.09, 0.02), new THREE.MeshStandardMaterial({ color: 0x2a6bd8, roughness: 0.5, emissive: 0x000000 }));
+        m.position.set(0.18, -0.25, 0.012);
+        const lcv = document.createElement('canvas'); lcv.width = 256; lcv.height = 128;
+        const lc = lcv.getContext('2d'); lc.fillStyle = '#ffffff'; lc.textAlign = 'center'; lc.textBaseline = 'middle'; lc.font = '900 76px Rubik, Arial, sans-serif'; lc.fillText('✈ FLY', 128, 68);
+        const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, depthWrite: false }));
+        lab.position.z = 0.0105; m.add(lab);
+        badgeBoard.add(m);
+        badgeButtons.push({ mesh: m, id: 'FLY', kind: 'fly', color: 0x2a6bd8 });
+      }
       g.updateMatrixWorld(true);
     }
     // hammers on the stands + their green (take) / red (put back) buttons
@@ -1514,6 +1554,28 @@
       if (parts[green]) adminButtons.push({ mesh: parts[green], id, take: true });
       if (parts[red]) adminButtons.push({ mesh: parts[red], id, take: false });
     });
+    // the FLY hammer on a fourth stand: a copy of the BAN stand (Cube.005) in the free corner (-0.52, -0.78, -0.85),
+    // mirrored like the KICK S stand is to KICK: hammer, green (take) and red (put back) buttons, a FLY label, a collider
+    if (parts['Cube.005'] && parts['Cube.012'] && parts['Cylinder.001'] && parts['Cube.004'] && parts['Cube.014']) {
+      const copy = (n, x, y, z) => { const s = parts[n], m = new THREE.Mesh(s.geometry, s.material.clone()); m.position.set(x, y, z); g.add(m); return m; };
+      const stand = copy('Cube.005', -0.52, -0.78, -0.85);
+      // hammer and buttons: the BAN stand's, mirrored across the room (z -> -z), like KICK S is to KICK
+      const head = copy('Cube.012', parts['Cube.012'].position.x, parts['Cube.012'].position.y, -parts['Cube.012'].position.z - 0.02);
+      const stick = copy('Cylinder.001', parts['Cylinder.001'].position.x, parts['Cylinder.001'].position.y, -parts['Cylinder.001'].position.z - 0.02);
+      const green = copy('Cube.004', parts['Cube.004'].position.x, parts['Cube.004'].position.y, -parts['Cube.004'].position.z - 0.02);
+      const red = copy('Cube.014', parts['Cube.014'].position.x, parts['Cube.014'].position.y, -parts['Cube.014'].position.z - 0.02);
+      // FLY label on both sides of the hammer head (like the lever labels)
+      const lcv = document.createElement('canvas'); lcv.width = 256; lcv.height = 128;
+      const lc = lcv.getContext('2d'); lc.fillStyle = '#ffb347'; lc.textAlign = 'center'; lc.textBaseline = 'middle'; lc.font = '900 92px Arial, sans-serif'; lc.fillText('FLY', 128, 70);
+      const label = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.13), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(lcv), transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+      label.position.set(head.position.x, head.position.y, head.position.z + 0.105); g.add(label);
+      standHammers.FLY = [head, stick, label];
+      adminButtons.push({ mesh: green, id: 'FLY', take: true }, { mesh: red, id: 'FLY', take: false });
+      g.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(stand);
+      flyStandCollider = { min: bb.min.clone(), max: bb.max.clone() }; colliders.push(flyStandCollider);
+      flyStandButtons = [green, red];
+    }
     // no door buttons on the wall any more: the door never opens, admins just walk through it
     ['Cube.013', 'Cube.018'].forEach(n => { if (parts[n]) parts[n].visible = false; });
     // ban list on the inside of the side wall
@@ -2284,6 +2346,7 @@
     if (adminFarWall && badgeBoard && objBox(badgeBoard, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminFarWall);
     if (adminBanWall && banPlane && objBox(banPlane, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminBanWall);
     if (wardCollider && wardrobeButtons.some(b => objBox(b.mesh, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
+    if (flyStandCollider && flyStandButtons.some(b => objBox(b, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(flyStandCollider);
     for (const d of shopDisplays) if (d.pedCol && pedestalZone(d).containsPoint(p)) _hzSkip.add(d.pedCol);
     return _hzSkip.size ? _hzSkip : null;
   }
@@ -2592,7 +2655,7 @@
       ok('door blocks a normal player', !!hitNormal);
       ok('door lets the owner through', !hitOwner);
       ok('door lets an admin through', !hitAdmin);
-      ok('door buttons removed from the wall', adminButtons.length === 6 && !adminButtons.some(b => b.door), adminButtons.length + ' admin buttons');
+      ok('door buttons removed from the wall', adminButtons.length === 2 * Object.keys(standHammers).length && !adminButtons.some(b => b.door), adminButtons.length + ' admin buttons for ' + Object.keys(standHammers).length + ' hammers');
       ok('door never opens (doorOpenShared)', doorOpenShared === false);
       // board: me (admin) + another player with an ID
       adminIds.add(fakeUid);
@@ -2919,6 +2982,11 @@
     monitorPng: () => monCv.toDataURL(),
     typeModId: id => { kbMode = 'id'; kbText = ''; pressKey(kbKeys.find(m => m.userData.value === 'MID')); for (const ch of id + ' M') { const k = kbKeys.find(m => m.userData.value === (ch === ' ' ? 'SPC' : ch)); k.userData.cool = 0; pressKey(k); } const typed = kbText; const k = kbKeys.find(m => m.userData.value === 'ENT'); k.userData.cool = 0; pressKey(k); return typed; },
     mods: () => [...modIds], isStaff: () => isStaff(), doorBlocks: () => { const d = colliders.find(c => c.admin); const p = d.min.clone().add(d.max).multiplyScalar(0.5); return !!probe(p, 0.16); },
+    fly: () => ({ flyMode, canFly: canFly(), held: heldHammer, vel: vel.toArray().map(v => +v.toFixed(2)) }),
+    pressFly: () => { pressBadge(badgeButtons.find(b => b.kind === 'fly')); return flyMode; },
+    flyStick: (sx, sy, look, frames = 60) => { const lh = hands.find(x => x.side === 'left') || hands[0]; const sp = lh.side, pp = lh.pad; lh.side = 'left'; lh.pad = { axes: [0, 0, sx, sy] };
+      camera.lookAt(camera.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(...look))); camera.updateMatrixWorld(true); vel.set(0, 0, 0); for (let i = 0; i < frames; i++) flyStep(1 / 72); lh.side = sp; lh.pad = pp; return vel.toArray().map(v => +v.toFixed(2)); },
+    flyStand: () => ({ stand: !!flyStandCollider, buttons: adminButtons.filter(b => b.id === 'FLY').length, hammer: (standHammers.FLY || []).length }),
     pressHammer: (id, take = true) => { const b = adminButtons.find(x => x.id === id && x.take === take); pressAdminButton(b); return heldHammer; },
     pressTag: id => { pressBadge(badgeButtons.find(b => b.id === id)); return myTagNow(); }, tagOf: uid => { const o = others.get(uid); return o ? o.tagText || '' : null; },
     monitorLine: () => kbMsg,
@@ -3850,7 +3918,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v45';
+  const GAME_VERSION = 'v46';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -5193,7 +5261,7 @@
           history = [];
         }
         wasTouching = false;
-        vel.y -= 9.8 * dt;
+        if (canFly()) flyStep(dt); else vel.y -= 9.8 * dt;
         rig.position.addScaledVector(vel, dt);
       }
     } else {
@@ -5213,12 +5281,15 @@
       vel.x += (wish.x - vel.x) * k;
       vel.z += (wish.z - vel.z) * k;
       wallTimer = Math.max(0, wallTimer - dt);
-      if (jumpQ) {
-        if (onGroundPrev) { vel.y = 6.5; thud(2); }
-        else if (wallTimer > 0) { vel.y = 6; vel.addScaledVector(wallNormal, 4); wallTimer = 0; thud(3); }
+      if (canFly()) vel.y = keys.Space ? 5 : (keys.ShiftLeft || keys.ShiftRight) ? -5 : 0; // flying: Space up, Shift down
+      else {
+        if (jumpQ) {
+          if (onGroundPrev) { vel.y = 6.5; thud(2); }
+          else if (wallTimer > 0) { vel.y = 6; vel.addScaledVector(wallNormal, 4); wallTimer = 0; thud(3); }
+        }
+        vel.y -= 14 * dt;
       }
       jumpQ = false;
-      vel.y -= 14 * dt;
       rig.position.addScaledVector(vel, dt);
       walkT += dt * Math.hypot(vel.x, vel.z);
     }
