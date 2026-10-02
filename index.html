@@ -2004,13 +2004,13 @@
   // The model's own keys are hidden; new keys (copies of a letter key, 0.84 size) fill the same area:
   // 5 rows between the model's first and fourth row, up to 10 keys per row, centered
   const LAYOUT = [
-    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['ROLE', 'MROLE'], ['TURN', 'MTURN'], ['SUN', 'MSUN'], ['TIME', 'MTIME']],
+    [['NAME', 'MNAME'], ['CODE', 'MCODE'], ['PUBLIC', 'MPUBLIC'], ['COLOR', 'MCOLOR'], ['ID', 'MID'], ['ROLE', 'MROLE'], ['TURN', 'MTURN'], ['SUN', 'MSUN'], ['TIME', 'MTIME']],
     [...'1234567890'].map(c => [c, c]),
     [...'QWERTYUIOP'].map(c => [c, c]),
     [...'ASDFGHJKL'].map(c => [c, c]).concat([['ENTER', 'ENT']]),
     [...'ZXCVBNM'].map(c => [c, c]).concat([['SPC', 'SPC'], ['CLR', 'CLR'], ['DEL', 'DEL']])
   ];
-  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MROLE: 0x8b5a2b, MTURN: 0x3b4a5c, MSUN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
+  const KEY_COLOR = { MNAME: 0x3b4a5c, MCODE: 0x3b4a5c, MPUBLIC: 0x2e9d5a, MCOLOR: 0x3b4a5c, MID: 0x3b4a5c, MROLE: 0x8b5a2b, MTURN: 0x3b4a5c, MSUN: 0x3b4a5c, MTIME: 0x3a5fb0, ENT: 0x43a047, DEL: 0xd84343, CLR: 0xe0822b, SPC: 0x6a6a6a };
   const KEY_S = 0.84;
   {
     // each model key's center (pcGroup space) and the key area
@@ -2097,7 +2097,8 @@
     tone(650 + Math.random() * 250, 0.05, 'square', 0.06);
     const v = m.userData.value;
     // another setting key leaves the ROLE screen (and then does its own thing)
-    if (kbMode === 'role' && /^M(NAME|CODE|COLOR|ID|TURN|SUN|TIME)$/.test(v)) { kbMode = 'code'; kbText = ''; roleTarget = null; kbMsg = ''; }
+    if (kbMode === 'role' && /^M(NAME|CODE|PUBLIC|COLOR|ID|TURN|SUN|TIME)$/.test(v)) { kbMode = 'code'; kbText = ''; roleTarget = null; kbMsg = ''; }
+    if (v === 'MPUBLIC') { goPublic(); return; }
     if (v === 'MROLE') {
       if (!isOwnerUid(myUserId)) { monSay('OWNER ONLY', '#ff8a70'); return; }
       kbMode = 'role'; kbText = ''; roleTarget = null; kbMsg = ''; applyKeyLabels(); drawMonitor(); return;
@@ -2171,6 +2172,17 @@
       if (adminIds.has(rec.uid)) { await db.collection('admins').doc(rec.uid).delete(); monSay('ADMIN REMOVED: ' + id, '#ffb070'); }
       else { await db.collection('admins').doc(rec.uid).set({ at: Date.now(), id, name: typeof rec.name === 'string' ? rec.name.slice(0, 14) : '' }); monSay('ADMIN ADDED: ' + id, '#aaffaa'); tagSound(); }
     } catch (e) { monSay('FAILED', '#ff4a3a'); }
+  }
+  // ---- PUBLIC: back to the public room ----
+  async function goPublic() {
+    // no live connection to the server (no lobby, or the room isn't connected): nothing to switch to
+    if (!lobby || (room && typeof room.connected === 'function' && !room.connected())) { monSay('OFFLINE', '#ffb070'); return 'OFFLINE'; }
+    if (room && !roomCode) { monSay('ALREADY PUBLIC', '#aaffaa'); return 'ALREADY PUBLIC'; }
+    monSay('CONNECTING...', '#ffcf4a', 30);
+    let ok = false; try { ok = await switchRoom(''); } catch (e) { ok = false; }
+    const msg = ok === true && room && !roomCode ? 'JOINED PUBLIC' : 'FAILED';
+    monSay(msg, msg === 'FAILED' ? '#ff4a3a' : '#7ed957'); if (msg === 'JOINED PUBLIC') tagSound();
+    return msg;
   }
   // ---- ROLE (owners): type a player's ID + ENTER, then 1 = ADMIN, 2 = MOD, 3 = REMOVE, 0 = CANCEL ----
   // The player is looked up in the room first, then in the ids list (players who aren't here). A player has one role:
@@ -3948,7 +3960,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v48';
+  const GAME_VERSION = 'v49';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
