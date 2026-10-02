@@ -3960,7 +3960,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v49';
+  const GAME_VERSION = 'v50';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4654,14 +4654,30 @@
     const i = hands.indexOf(h);
     return flipperTip(selfAv, i, V3()) || handWorld(h, V3());
   }
+  // Gorilla Tag movement numbers, from Another Axiom's GorillaLocomotion (MIT license):
+  // a hand is never farther than maxArmLength from the head; a holding hand that ends up more than unStickDistance from
+  // its grab point lets go; at release, the hands' average push is a jump only above velocityLimit (m/s), times
+  // jumpMultiplier, at most maxJumpSpeed
+  const GT = { maxArmLength: 1.5, unStickDistance: 1.0, velocityLimit: 0.3, jumpMultiplier: 1.1, maxJumpSpeed: 6.5 };
+  const _hwHead = V3();
+  // the jump when the hands let go: the average push, if over velocityLimit, times jumpMultiplier, at most maxJumpSpeed
+  function gtJump(avg) {
+    if (avg.length() <= GT.velocityLimit) return avg.set(0, 0, 0);
+    avg.multiplyScalar(GT.jumpMultiplier);
+    if (avg.length() > GT.maxJumpSpeed) avg.setLength(GT.maxJumpSpeed);
+    return avg;
+  }
   function handWorld(h, out) {
     _hwFwd.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
     if (_hwFwd.lengthSq() > 1e-4) _hwRight.set(-_hwFwd.z, 0, _hwFwd.x).normalize(); // looking straight up/down: keep the last right
     const side = h.side === 'left' ? -1 : h.side === 'right' ? 1 : 0;
     _hwShoulder.copy(camera.position).add(view.position).addScaledVector(_hwRight, side * SHOULDER_SIDE);
     _hwShoulder.y -= SHOULDER_DOWN;
-    return out.copy(h.ctrl.position).add(view.position).sub(_hwShoulder).multiplyScalar(ARM_REACH)
-      .add(_hwShoulder).add(rig.position);
+    out.copy(h.ctrl.position).add(view.position).sub(_hwShoulder).multiplyScalar(ARM_REACH).add(_hwShoulder);
+    // arms can't stretch farther than maxArmLength from the head (GorillaLocomotion)
+    _hwHead.copy(camera.position).add(view.position);
+    if (out.distanceTo(_hwHead) > GT.maxArmLength) out.sub(_hwHead).setLength(GT.maxArmLength).add(_hwHead);
+    return out.add(rig.position);
   }
 
   // ---- One hand against the world (VR hand locomotion) ----
@@ -4693,7 +4709,8 @@
   function handContact(h, cur, dt, move, onGround) {
     if (!h.safe) h.safe = cur.clone();
     if (h.touch) {
-      if (_hcA.copy(cur).sub(h.anchor).dot(h.normal) > 0.02) { h.touch = false; h.cooldown = 0.08; return 0; }
+      // lets go when pulled off the surface, or when it got more than unStickDistance from the grab point (GorillaLocomotion)
+      if (_hcA.copy(cur).sub(h.anchor).dot(h.normal) > 0.02 || _hcA.length() > GT.unStickDistance) { h.touch = false; h.cooldown = 0.08; h.safe.copy(h.anchor).addScaledVector(h.normal, HAND_R * SAFE_OUT); return 0; }
       if (Math.abs(h.normal.y) < 0.5 && !onGround) {
         h.anchor.y -= h.slide * dt;
         h.slide = Math.min(WALL_SLIDE_MAX, h.slide + WALL_SLIDE_ACC * dt);
@@ -4716,14 +4733,22 @@
   }
   // test hooks: fake hands against a test wall, and the head of a penguin
   window.__handTest = {
+    gt: () => GT,
+    jumpFrom: pushes => { const avg = V3(); pushes.forEach(p => avg.add(V3(...p))); avg.divideScalar(pushes.length); return gtJump(avg).toArray().map(v => +v.toFixed(3)); },
+    armAt: ctrl => { const hh = hands[1], sp = hh.ctrl.position.clone(), ss = hh.side; hh.ctrl.position.set(...ctrl); hh.side = 'right'; camera.position.set(0, 1.6, 0); camera.quaternion.identity(); view.position.set(0, 0, 0);
+      const p = handWorld(hh, V3()).sub(rig.position); hh.ctrl.position.copy(sp); hh.side = ss; return { dist: +p.distanceTo(V3(0, 1.6, 0)).toFixed(3) }; },
     wall: (min, max) => { const c = { min: V3(...min), max: V3(...max), test: true }; colliders.push(c); return colliders.length; },
     headOf: uid => { const o = others.get(uid); return o && o.headQ ? o.headQ.toArray().map(v => +v.toFixed(3)) : null; },
     clearWalls: () => { for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].test) colliders.splice(i, 1); return true; },
     // one hand: from last -> cur over frames; returns its state after each frame
-    run: (frames, onGround = false) => {
+    // follow: the hand moves with its grab point while holding (like the body being pulled along in the game)
+    run: (frames, onGround = false, follow = false) => {
       const hh = { touch: false, anchor: V3(), normal: V3(), cooldown: 0, lastWorld: V3(...frames[0]), safe: V3(...frames[0]), pad: null, slide: 0 }, out = [];
-      for (let i = 1; i < frames.length; i++) { const mv = V3(); hh.cooldown = Math.max(0, hh.cooldown - 1 / 72); const c = handContact(hh, V3(...frames[i]), 1 / 72, mv, onGround);
-        out.push({ hold: c, anchor: hh.anchor.toArray().map(v => +v.toFixed(3)), move: mv.toArray().map(v => +v.toFixed(4)), slide: +hh.slide.toFixed(2) }); hh.lastWorld.copy(V3(...frames[i])); }
+      let off = null;
+      for (let i = 1; i < frames.length; i++) { const mv = V3(); hh.cooldown = Math.max(0, hh.cooldown - 1 / 72);
+        const cp = follow && off && hh.touch ? hh.anchor.clone().add(off) : V3(...frames[i]);
+        const c = handContact(hh, cp, 1 / 72, mv, onGround); if (c && !off) off = cp.clone().sub(hh.anchor);
+        out.push({ hold: c, anchor: hh.anchor.toArray().map(v => +v.toFixed(3)), move: mv.toArray().map(v => +v.toFixed(4)), slide: +hh.slide.toFixed(2) }); hh.lastWorld.copy(cp); }
       return out;
     },
     // picture of a penguin at (60, 1, 60) with its head at rotation q, seen from the side and from the front
@@ -5168,6 +5193,7 @@
   let gfxT = 0;
   function applyGraphics() {
     const on = gfxMode !== 'LOW', size = gfxMode === 'ULTRA' ? 2048 : 1024;
+    if (gfxMode !== 'ULTRA') { rays.visible = false; sunHalo.visible = false; } // gone at once, not on the next frame
     if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
     if (on !== shadowsOn) {
       shadowsOn = on; renderer.shadowMap.enabled = on; sun.castShadow = on;
@@ -5316,9 +5342,8 @@
         if (wasTouching && history.length) {
           const avg = V3();
           history.forEach(v => avg.add(v));
-          avg.divideScalar(history.length).multiplyScalar(1.15);
-          if (avg.length() > 8) avg.setLength(8);
-          vel.copy(avg);
+          avg.divideScalar(history.length);
+          vel.copy(gtJump(avg)); // jump like Gorilla Tag (GorillaLocomotion, MIT)
           history = [];
         }
         wasTouching = false;
