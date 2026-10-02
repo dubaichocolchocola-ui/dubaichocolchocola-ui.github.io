@@ -2041,6 +2041,23 @@
     });
     keyParts.forEach(m => { m.visible = false; });
   }
+  // The computer is solid (bodies and hands): a collider for every part of 15 cm or more that isn't a key, the screen
+  // included (the desk and the cabinet already have one). A part under/around the keys stops hands only away from the
+  // keyboard, like the desk, so the keys can still be reached (see handProbeSkip).
+  const PC_SOLID_MIN = 0.15, pcColliders = [], kbBaseColliders = [];
+  {
+    pcGroup.updateMatrixWorld(true);
+    const bb = new THREE.Box3(), sz = new THREE.Vector3();
+    Object.entries(pcParts).forEach(([n, m]) => {
+      if (keyParts.includes(m) || n === 'Cube' || n === 'Cube.031') return;
+      bb.setFromObject(m); bb.getSize(sz);
+      if (Math.max(sz.x, sz.y, sz.z) < PC_SOLID_MIN) return;
+      const c = { min: bb.min.clone(), max: bb.max.clone(), pc: n };
+      colliders.push(c); pcColliders.push(c);
+    });
+    const keysBox = new THREE.Box3(); kbKeys.forEach(m => keysBox.union(bb.setFromObject(m))); keysBox.expandByScalar(0.02);
+    pcColliders.forEach(c => { if (keysBox.intersectsBox(new THREE.Box3(c.min, c.max))) kbBaseColliders.push(c); });
+  }
   // Colors for color mode: every letter key becomes a color
   const KEY_COLORS = ['#e53935', '#ff7043', '#ff9800', '#ffc107', '#ffeb3b', '#cddc39', '#8bc34a', '#43a047',
     '#00897b', '#26c6da', '#4fc3f7', '#006be7', '#1a237e', '#7e57c2', '#8a6cff', '#ba68c8',
@@ -2348,6 +2365,7 @@
   function handProbeSkip(p) {
     _hzSkip.clear();
     if (deskCollider && keyboardZone().containsPoint(p)) _hzSkip.add(deskCollider);
+    if (kbBaseColliders.length && keyboardZone().containsPoint(p)) kbBaseColliders.forEach(c => _hzSkip.add(c));
     if (adminFarWall && badgeBoard && objBox(badgeBoard, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminFarWall);
     if (adminBanWall && banPlane && objBox(banPlane, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p)) _hzSkip.add(adminBanWall);
     if (wardCollider && wardrobeButtons.some(b => objBox(b.mesh, _hz).expandByScalar(HAND_ZONE_PAD).containsPoint(p))) _hzSkip.add(wardCollider);
@@ -2994,6 +3012,7 @@
       camera.lookAt(camera.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(...look))); camera.updateMatrixWorld(true); vel.set(0, 0, 0); for (let i = 0; i < frames; i++) flyStep(1 / 72); lh.side = sp; lh.pad = pp; return vel.toArray().map(v => +v.toFixed(2)); },
     flyStand: () => ({ stand: !!flyStandCollider, buttons: adminButtons.filter(b => b.id === 'FLY').length, hammer: (standHammers.FLY || []).length }),
     pressHammer: (id, take = true) => { const b = adminButtons.find(x => x.id === id && x.take === take); pressAdminButton(b); return heldHammer; },
+    pcSolid: () => pcColliders.map(c => c.pc + (kbBaseColliders.includes(c) ? ' (keyboard)' : '') + ' ' + c.min.toArray().map(v => +v.toFixed(2)) + ' .. ' + c.max.toArray().map(v => +v.toFixed(2))),
     pressTag: id => { pressBadge(badgeButtons.find(b => b.id === id)); return myTagNow(); }, tagOf: uid => { const o = others.get(uid); return o ? o.tagText || '' : null; },
     monitorLine: () => kbMsg,
     ban: (uid, mins) => db.collection('bans').doc(uid).set({ until: Date.now() + mins * 60000, name: 'x', by: myUserId }),
@@ -3451,10 +3470,15 @@
         const d = hgt * rp.ny;
         if (d < r) { const depth = r - d; if (!best || depth > best.depth) best = { depth, normal: rp.n.clone(), surface: p.clone().addScaledVector(rp.n, -d), ramp: rp }; }
       }
-      const over = Math.abs(b) - (rp.w / 2 - r);
-      if (over > 0 && hgt > -0.1 && hgt < 1.3 && Math.abs(b) < rp.w / 2 + 0.3) {
-        const sg = Math.sign(b), nrm = V3(-rp.sx * sg, 0, -rp.sz * sg);
-        if (!best || over > best.depth) best = { depth: over, normal: nrm, surface: p.clone().addScaledVector(nrm, over) };
+      // the tube's side walls (up to 1.3 m): a point INSIDE the tube near a wall is pushed in, a point OUTSIDE near a
+      // wall is pushed out (before, anything up to 30 cm outside was pulled in: a hand went through from outside)
+      if (hgt > -0.1 && hgt < 1.3) {
+        const ab = Math.abs(b), sg = Math.sign(b) || 1, half = rp.w / 2;
+        const over = ab <= half ? ab - (half - r) : (half + r) - ab;
+        if (over > 0) {
+          const nrm = ab <= half ? V3(-rp.sx * sg, 0, -rp.sz * sg) : V3(rp.sx * sg, 0, rp.sz * sg);
+          if (!best || over > best.depth) best = { depth: over, normal: nrm, surface: p.clone().addScaledVector(nrm, over) };
+        }
       }
     }
     return best;
@@ -3924,7 +3948,7 @@
   }
 
   // Wrist panel
-  const GAME_VERSION = 'v47';
+  const GAME_VERSION = 'v48';
   // Canvas 512x352 on a 0.16 x 0.11 m plane (same aspect). The bottom row is the "calibrate height" button.
   const WRIST_W = 0.16, WRIST_H = 0.11, WCV_W = 512, WCV_H = 352;
   const CAL_BTN = { x: 26, y: 262, w: 226, h: 70 }, MIC_BTN = { x: 262, y: 262, w: 226, h: 70 }; // canvas px
@@ -4632,15 +4656,18 @@
   // A touching hand stays on its anchor (the body moves instead). On a WALL (|normal.y| < 0.5) the anchor slides down,
   // starting at WALL_SLIDE0 m/s and speeding up by WALL_SLIDE_ACC m/s² to WALL_SLIDE_MAX, so you can't hang on a wall
   // (not while standing on the ground: that would pull the body into the floor).
-  // A free hand is checked along its whole way since last frame (SWEEP_HAND steps, for moves of 4 cm to 1 m; longer is
-  // a teleport/respawn): the first surface it meets is where it grabs, so a fast hand can't pass through a thin wall.
+  // Every hand keeps h.safe: the last point where it was OUTSIDE everything (touching: just off its anchor; in the
+  // cooldown: where it is, if that's free). A free hand is checked along the whole line from h.safe to where it is
+  // now (SWEEP_HAND steps; a jump of SAFE_MAX or more is a teleport/respawn), and the first surface it meets is where
+  // it grabs. So a hand can't get through a wall, the computer or the slide, however it moves (fast, in the cooldown
+  // after letting go or a turn, or a little each frame).
   // Over the keyboard etc. the desk doesn't stop the hand (see handProbeSkip).
-  const WALL_SLIDE0 = 1.2, WALL_SLIDE_ACC = 10, WALL_SLIDE_MAX = 6, SWEEP_HAND = 0.03;
+  const WALL_SLIDE0 = 1.2, WALL_SLIDE_ACC = 10, WALL_SLIDE_MAX = 6, SWEEP_HAND = 0.03, SAFE_MAX = 1.5, SAFE_OUT = 1.3;
   const _hcA = new THREE.Vector3(), _hcP = new THREE.Vector3();
   function handSweep(from, to) {
     const d = from.distanceTo(to);
-    if (d > 0.04 && d < 1.0) {
-      const steps = Math.ceil(d / SWEEP_HAND);
+    if (d < SAFE_MAX) {
+      const steps = Math.max(1, Math.ceil(d / SWEEP_HAND));
       for (let i = 1; i <= steps; i++) {
         _hcP.lerpVectors(from, to, i / steps);
         const hit = probe(_hcP, HAND_R, handProbeSkip(_hcP));
@@ -4652,19 +4679,24 @@
   }
   // returns 1 if the hand holds on (and adds its pull to move), 0 if it's free
   function handContact(h, cur, dt, move, onGround) {
+    if (!h.safe) h.safe = cur.clone();
     if (h.touch) {
       if (_hcA.copy(cur).sub(h.anchor).dot(h.normal) > 0.02) { h.touch = false; h.cooldown = 0.08; return 0; }
       if (Math.abs(h.normal.y) < 0.5 && !onGround) {
         h.anchor.y -= h.slide * dt;
         h.slide = Math.min(WALL_SLIDE_MAX, h.slide + WALL_SLIDE_ACC * dt);
       }
+      h.safe.copy(h.anchor).addScaledVector(h.normal, HAND_R * SAFE_OUT);
       move.add(_hcA.copy(h.anchor).sub(cur));
       return 1;
     }
-    if (h.cooldown > 0) return 0;
-    const hit = handSweep(h.lastWorld, cur);
-    if (!hit) return 0;
+    // in the cooldown nothing is grabbed; the safe point only moves on if the whole way there is free (not just the
+    // point itself: a fast hand could be past a thin wall by the next frame)
+    if (h.cooldown > 0) { if (!handSweep(h.safe, cur)) h.safe.copy(cur); return 0; }
+    const hit = handSweep(h.safe, cur);
+    if (!hit) { h.safe.copy(cur); return 0; }
     h.touch = true; h.anchor.copy(hit.surface); h.normal.copy(hit.normal); h.slide = WALL_SLIDE0;
+    h.safe.copy(h.anchor).addScaledVector(h.normal, HAND_R * SAFE_OUT);
     move.add(_hcA.copy(h.anchor).sub(cur));
     const impact = h.lastWorld.distanceTo(cur) / dt;
     if (impact > 0.6) { thud(impact); buzz(h.pad, Math.min(1, 0.15 + impact * 0.08), 25); }
@@ -4677,8 +4709,8 @@
     clearWalls: () => { for (let i = colliders.length - 1; i >= 0; i--) if (colliders[i].test) colliders.splice(i, 1); return true; },
     // one hand: from last -> cur over frames; returns its state after each frame
     run: (frames, onGround = false) => {
-      const hh = { touch: false, anchor: V3(), normal: V3(), cooldown: 0, lastWorld: V3(...frames[0]), pad: null, slide: 0 }, out = [];
-      for (let i = 1; i < frames.length; i++) { const mv = V3(); const c = handContact(hh, V3(...frames[i]), 1 / 72, mv, onGround);
+      const hh = { touch: false, anchor: V3(), normal: V3(), cooldown: 0, lastWorld: V3(...frames[0]), safe: V3(...frames[0]), pad: null, slide: 0 }, out = [];
+      for (let i = 1; i < frames.length; i++) { const mv = V3(); hh.cooldown = Math.max(0, hh.cooldown - 1 / 72); const c = handContact(hh, V3(...frames[i]), 1 / 72, mv, onGround);
         out.push({ hold: c, anchor: hh.anchor.toArray().map(v => +v.toFixed(3)), move: mv.toArray().map(v => +v.toFixed(4)), slide: +hh.slide.toFixed(2) }); hh.lastWorld.copy(V3(...frames[i])); }
       return out;
     },
